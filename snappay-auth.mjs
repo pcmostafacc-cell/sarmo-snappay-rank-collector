@@ -62,7 +62,11 @@ export async function openSnappPay(browser, wp) {
       .map(value => value.trim()).filter(Boolean).slice(0, 2);
     const testids = await page.locator('[data-testid]').evaluateAll(elements =>
       [...new Set(elements.map(element => element.getAttribute('data-testid')))].filter(Boolean).slice(0, 15));
-    throw new Error('SnappPay did not return after OTP (host: ' + host + '; alerts: ' + (alerts.join(' | ') || 'none') + '; testids: ' + testids.join(',') + '; HTTP: ' + (failedResponses.join(',') || 'none') + ')');
+    const messages = await page.locator('[data-testid="otp-error"], [data-testid="toast-text"]')
+      .allTextContents().catch(() => []);
+    const safeMessages = messages.map(value => value.replace(/[0-9۰-۹٠-٩]/g, '#').trim())
+      .filter(Boolean).slice(0, 2);
+    throw new Error('SnappPay did not return after OTP (host: ' + host + '; alerts: ' + (alerts.join(' | ') || 'none') + '; messages: ' + (safeMessages.join(' | ') || 'none') + '; testids: ' + testids.join(',') + '; HTTP: ' + (failedResponses.join(',') || 'none') + ')');
   }
   await page.locator('[data-testid="search-typing-input"]').waitFor({ timeout: 20000 });
   await wp(AUTH_PATH, {
