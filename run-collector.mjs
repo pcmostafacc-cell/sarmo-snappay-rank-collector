@@ -1,6 +1,7 @@
 import { chromium } from 'playwright';
+import { appendFileSync } from 'node:fs';
 import { collectKeyword } from './snappay-playwright-collector.mjs';
-import { openSnappPay } from './snappay-auth.mjs';
+import { isProviderRateLimited, openSnappPay } from './snappay-auth.mjs';
 import { assertCollectorContract } from './collector-contract.mjs';
 
 const required = ['SARMO_WP_URL', 'SARMO_WP_USER', 'SARMO_WP_APP_PASSWORD'];
@@ -25,12 +26,34 @@ async function wp(path, options = {}) {
 }
 
 const status = await wp('/wp-json/sarmo-monitor/v1/collector-status');
-assertCollectorContract(status);
+const preflight = process.argv.includes('--preflight');
+try {
+  assertCollectorContract(status);
+} catch (error) {
+  if (!preflight) throw error;
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, 'run=false\n');
+  console.log('WordPress plugin contract is outdated; skipping browser installation and collection.');
+  process.exit(0);
+}
 
 const keywords = await wp('/wp-json/sarmo-monitor/v1/keywords');
 const queries = Object.keys(keywords);
 if (!queries.length) process.exit(0);
 if (queries.length > 10) throw new Error('Monitoring is capped at 10 keywords to control runner usage');
+
+const auth = await wp('/wp-json/sarmo-monitor/v1/collector-auth');
+const runBrowser = !isProviderRateLimited(auth);
+if (preflight) {
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `run=${runBrowser}\n`);
+  console.log(runBrowser
+    ? 'Provider lock is clear; browser collection can run.'
+    : 'Provider OTP rate-limit lock is active; skipping browser installation and collection.');
+  process.exit(0);
+}
+if (!runBrowser) {
+  console.log('Provider OTP rate-limit lock is active; skipping browser and SMS retry. Check /login_status in Bale.');
+  process.exit(0);
+}
 
 const envList = (name, fallback = []) => {
   const value = process.env[name];
@@ -54,7 +77,7 @@ try {
   let page;
   let authError = null;
   try {
-    ({ page } = await openSnappPay(browser, wp));
+    ({ page } = await openSnappPay(browser, wp, auth));
   } catch (error) {
     authError = safeError(error);
   }

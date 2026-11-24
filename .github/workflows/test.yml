@@ -6,6 +6,7 @@ on:
       - '*.mjs'
       - 'package.json'
       - 'wordpress-plugin/**/*.php'
+      - 'tests/**/*.php'
       - '.github/workflows/test.yml'
 permissions:
   contents: read
@@ -22,5 +23,11 @@ jobs:
         with:
           node-version: '22'
       - run: for file in wordpress-plugin/*.php; do php -l "$file"; done
+      - run: php -l tests/otp-guard.php
+      - run: php -l tests/source-health.php
+      - run: php -l tests/market-report.php
+      - run: php tests/otp-guard.php
+      - run: php tests/source-health.php
+      - run: php tests/market-report.php
       - run: node --test *.test.mjs
       - run: for file in *.mjs; do node --check "$file"; done

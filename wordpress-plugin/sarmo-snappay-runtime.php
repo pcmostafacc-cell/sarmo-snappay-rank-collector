@@ -9,7 +9,7 @@ final class Sarmo_SnappPay_Runtime {
     private const WEBHOOK_UPDATE = 'sarmo_monitor_bale_last_update_id';
     private const HOOK = 'sarmo_monitor_tick';
     private const KEYWORDS = 'sarmo_snappay_keywords';
-    private const SCHEMA_VERSION = '0.6.0';
+    private const SCHEMA_VERSION = '0.7.0';
     private const MAX_KEYWORDS = 10;
 
     public static function init(): void {
@@ -141,10 +141,28 @@ final class Sarmo_SnappPay_Runtime {
         $states = (array) get_option(self::HEALTH, []);
         $state = (array) ($states[$row['query']] ?? ['status' => 'ok']);
         if (empty($row['source_valid'])) {
-            if (($state['status'] ?? 'ok') !== 'failed' && self::send(
-                "⚠️ منبع پایش «{$row['query']}» نامعتبر است؛ افت رتبه اعلام نمی‌شود. خطای دقیق را در پنل وردپرس ببین."
-            )) {
-                $states[$row['query']] = ['status' => 'failed', 'since' => current_time('mysql', true)];
+            $warning = trim(sanitize_text_field((string) ($row['source_warning'] ?? '')));
+            $warning = mb_substr($warning !== '' ? $warning : 'خطای نامشخص منبع پایش', 0, 180);
+            $rate_limited = (bool) preg_match('/\b429\b|too\s+many|rate[ -]?limit|try\s+again\s+later|please\s+wait|تعداد\s+درخواست|بیش\s+از\s+حد|محدودیت|دوباره\s+تلاش\s+کنید|صبر\s+کن/iu', $warning);
+            $signature = hash('sha256', $rate_limited ? 'snappay-provider-rate-limit' : $warning);
+            if (($state['status'] ?? 'ok') === 'failed' && hash_equals((string) ($state['warning_signature'] ?? ''), $signature)) {
+                return;
+            }
+            if ($rate_limited) {
+                $reason = 'اسنپ‌پی درخواست ورود پیامکی را با محدودیت تعداد درخواست‌ها رد کرده (۴۲۹). OTP ارسال نشده و افت رتبه اعلام نمی‌شود؛ برای جلوگیری از تکرار، تلاش ورود تا پایان قفل بسته است. زمان مجازشدن را با /login_status ببین.';
+            } else {
+                $reason = "علت ثبت‌شده: $warning";
+            }
+            $last_global_rate_alert = (string) get_option('sarmo_monitor_rate_alert_signature', '');
+            $already_reported = $rate_limited && hash_equals($last_global_rate_alert, $signature);
+            if ($already_reported || self::send("⚠️ منبع پایش «{$row['query']}» نامعتبر است؛ افت رتبه اعلام نمی‌شود.\n$reason")) {
+                $states[$row['query']] = [
+                    'status' => 'failed', 'since' => current_time('mysql', true),
+                    'warning_signature' => $signature,
+                ];
+                if ($rate_limited) {
+                    update_option('sarmo_monitor_rate_alert_signature', $signature, false);
+                }
                 update_option(self::HEALTH, $states, false);
             }
             return;
@@ -407,15 +425,17 @@ final class Sarmo_SnappPay_Runtime {
                 $reply = "وضعیت پایش:\n" . self::report(false) . "\n\nورود: " . Sarmo_SnappPay_Auth::status() . "\nSearch Ads: منبع کمپین/هزینه متصل نیست.";
                 break;
             case '/login':
-                $reply = Sarmo_SnappPay_Auth::set_phone($remainder) ?
-                    'یک تلاش ورود برای ۳۰ دقیقه مجاز شد. کد پیامکی فقط یک‌بار درخواست می‌شود؛ پس از دریافت همان کد تازه را بفرست.' :
-                    'شماره معتبر نیست یا یک درخواست ورود فعال است. قالب دستور: /login 09xxxxxxxxx';
+                if (Sarmo_SnappPay_Auth::set_phone($remainder)) {
+                    $reply = 'یک تلاش ورود برای ۳۰ دقیقه مجاز شد. شماره فقط یک‌بار فرستاده می‌شود؛ کد را فقط اگر پیامک همان تلاش رسید بفرست.';
+                } else {
+                    $reply = "تلاش ورود مجاز نشد.\n" . Sarmo_SnappPay_Auth::status() . "\nقالب دستور: /login 09xxxxxxxxx";
+                }
                 break;
             case '/otp':
                 $code = $remainder;
                 $reply = Sarmo_SnappPay_Auth::receive_otp($code) ?
                     'کد دریافت شد و برای ورود استفاده می‌شود.' :
-                    'اکنون درخواست کد فعالی نداریم یا کد نامعتبر/منقضی است. منتظر پیام تازهٔ ربات بمان و سپس کد را بفرست.';
+                    "کد ثبت نشد یا درخواست ورود فعال نیست.\n" . Sarmo_SnappPay_Auth::status();
                 break;
             case '/login_status':
                 $reply = Sarmo_SnappPay_Auth::status();
@@ -469,26 +489,66 @@ final class Sarmo_SnappPay_Runtime {
         $item = self::latest($query, true);
         if (!$item) { return "برای «$query» مشاهدهٔ معتبر نداریم."; }
         $details = json_decode((string) ($item['details'] ?? ''), true);
-        $competitors = array_slice((array) ($details['top_competitors'] ?? []), 0, 10);
-        if (!$competitors) { return "برای «$query» دادهٔ رقبا در آخرین اسکن موجود نیست."; }
-        $lines = ["رقبای دیده‌شده برای «$query» (اسکن {$item['scanned_products']} کارت):"];
+        $own_products = array_slice((array) ($details['own_products'] ?? []), 0, 5);
+        $competitors = array_slice((array) ($details['top_competitors'] ?? []), 0, 8);
+        if (!$own_products && !$competitors) { return "برای «$query» دادهٔ محصولات در آخرین اسکن موجود نیست."; }
+        $observed_at = (string) ($item['observed_at'] ?? '');
+        if ($observed_at === '') {
+            $observed_at = 'نامشخص';
+        } else {
+            try {
+                $observed_at = (new DateTimeImmutable($observed_at, new DateTimeZone('UTC')))
+                    ->setTimezone(new DateTimeZone('Asia/Tehran'))->format('Y/m/d H:i');
+            } catch (Throwable $error) {
+                $observed_at = 'نامشخص';
+            }
+        }
+        $lines = ["مقایسهٔ کارت‌های جست‌وجو برای «$query»؛ {$item['scanned_products']} کارت؛ زمان تهران: $observed_at"];
+        $lines[] = 'محصولات سارمو:';
+        if ($own_products) {
+            foreach ($own_products as $product) {
+                $rank = max(0, (int) ($product['rank'] ?? 0));
+                $title = sanitize_text_field((string) ($product['title'] ?? 'محصول بدون عنوان'));
+                $merchant = sanitize_text_field((string) ($product['merchant'] ?? 'سارمو استایل'));
+                $ad = !empty($product['isAd']) ? ' | آگهی' : ' | نمایش عادی';
+                $signals = self::card_signals((array) $product);
+                $lines[] = "$rank. $title — $merchant$ad" . ($signals ? ' | ' . implode(' | ', $signals) : '');
+            }
+        } elseif (!empty($details['scan_complete'])) {
+            $lines[] = 'در اسکن کامل دیده نشد.';
+        } else {
+            $lines[] = 'در کارت‌های اسکن‌شده دیده نشد؛ چون اسکن کامل نیست، نبودن محصول نتیجه‌گیری قطعی نیست.';
+        }
+        $lines[] = 'رقبا:';
         foreach ($competitors as $competitor) {
             $rank = max(0, (int) ($competitor['rank'] ?? 0));
             $merchant = sanitize_text_field((string) ($competitor['merchant'] ?? 'فروشنده نامشخص'));
             $title = sanitize_text_field((string) ($competitor['title'] ?? 'محصول بدون عنوان'));
-            $price = sanitize_text_field((string) ($competitor['price'] ?? ''));
-            $rating = sanitize_text_field((string) ($competitor['rating'] ?? ''));
-            $discount = sanitize_text_field((string) ($competitor['discount'] ?? ''));
             $ad = !empty($competitor['isAd']) ? ' | آگهی' : '';
-            $signals = array_filter([
-                $price !== '' ? 'قیمت ' . $price : '',
-                $rating !== '' ? 'امتیاز/نمره ' . $rating : '',
-                $discount !== '' ? 'تخفیف ' . $discount : '',
-            ]);
+            $signals = self::card_signals((array) $competitor);
             $lines[] = "$rank. $title — $merchant$ad" . ($signals ? ' | ' . implode(' | ', $signals) : '');
         }
-        $lines[] = 'این فهرست فقط کارت‌های قابل مشاهده در عمق اسکن را پوشش می‌دهد.';
+        $lines[] = 'امتیاز، قیمت و تخفیف فقط در صورتی درج می‌شود که روی کارت جست‌وجو دیده شود.';
+        $lines[] = 'قیمت کارت، قیمت خود محصول است؛ صفحهٔ فروشگاهی اسنپ‌پی هزینهٔ تبلیغ یا کلیک این جایگاه‌ها را نشان نمی‌دهد. برای هزینه باید گزارش پنل Search Ads وصل شود.';
+        $lines[] = !empty($details['scan_complete'])
+            ? 'اسکن تا انتهای نتایج قابل‌بارگذاری کامل بود.'
+            : 'این مقایسه فقط کارت‌های بارگذاری‌شده را پوشش می‌دهد و اسکن کامل نشده است.';
         return implode("\n", $lines);
+    }
+
+    private static function card_signals(array $card): array {
+        $price = sanitize_text_field((string) ($card['price'] ?? ''));
+        $rating = sanitize_text_field((string) ($card['rating'] ?? ''));
+        $review_count = sanitize_text_field((string) ($card['reviewCount'] ?? ''));
+        $discount = sanitize_text_field((string) ($card['discount'] ?? ''));
+        $availability = sanitize_text_field((string) ($card['availability'] ?? ''));
+        return array_values(array_filter([
+            $price !== '' ? 'قیمت کالا ' . $price : '',
+            $rating !== '' ? 'امتیاز/نمرهٔ کارت ' . $rating : '',
+            $review_count !== '' ? 'تعداد نظر ' . $review_count : '',
+            $discount !== '' ? 'تخفیف ' . $discount : '',
+            $availability !== '' ? 'موجودی ' . $availability : '',
+        ]));
     }
 
     public static function menu(): void {

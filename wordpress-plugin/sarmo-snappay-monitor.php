@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Sarmo SnappPay Monitor
  * Description: Keyword targets, verified rank observations, and Bale reports for Sarmo.
- * Version: 0.6.0
+ * Version: 0.7.0
  * Requires PHP: 8.0
  * Text Domain: sarmo-snappay-monitor
  */
@@ -97,11 +97,11 @@ final class Sarmo_SnappPay_Monitor {
             'methods' => 'GET',
             'callback' => static function () {
                 return rest_ensure_response([
-                    'api_version' => '0.6.0',
-                    'plugin_version' => '0.6.0',
+                    'api_version' => '0.7.0',
+                    'plugin_version' => '0.7.0',
                     'max_keywords' => self::MAX_KEYWORDS,
                     'rank_fields' => ['grid_rank', 'ad_rank', 'absolute_ad_slot', 'merchant_rank'],
-                    'otp_mode' => 'owner-armed-one-time',
+                    'otp_mode' => 'owner-armed-rate-limit-aware-one-time',
                 ]);
             },
             'permission_callback' => static function () {

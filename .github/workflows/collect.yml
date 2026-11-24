@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   collect:
-    # Keep the ten-minute schedule idle until WordPress 0.6.0 is installed and verified.
+    # Keep the ten-minute schedule idle until WordPress 0.7.0 is installed and verified.
     if: ${{ vars.SARMO_COLLECTOR_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 8
@@ -31,6 +31,10 @@ jobs:
         with:
           node-version: '22'
       - run: npm install --no-audit --no-fund
-      - run: npx playwright install chromium --with-deps
       - run: node --test *.test.mjs
-      - run: node run-collector.mjs
+      - id: preflight
+        run: node run-collector.mjs --preflight
+      - if: steps.preflight.outputs.run == 'true'
+        run: npx playwright install chromium --with-deps
+      - if: steps.preflight.outputs.run == 'true'
+        run: node run-collector.mjs

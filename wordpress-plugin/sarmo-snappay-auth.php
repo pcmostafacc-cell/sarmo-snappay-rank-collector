@@ -7,6 +7,7 @@ final class Sarmo_SnappPay_Auth {
     private const CHALLENGE_TTL = 300;
     private const LOGIN_ARM_TTL = 1800;
     private const LOGIN_COOLDOWN = 600;
+    private const PROVIDER_RATE_LIMIT_COOLDOWN = 43200;
 
     public static function init(): void {
         add_action('rest_api_init', [self::class, 'routes']);
@@ -18,6 +19,31 @@ final class Sarmo_SnappPay_Auth {
 
     private static function save(array $data): void {
         update_option(self::OPTION, $data, false);
+    }
+
+    private static function provider_rate_limit_until(array $data): int {
+        $stored_until = (int) ($data['rate_limited_until'] ?? 0);
+        if ($stored_until > time()) { return $stored_until; }
+
+        // Recover a 429 lock from the sanitized collector observations after a
+        // plugin update, even if the rate-limit callback did not reach WordPress.
+        global $wpdb;
+        if (!isset($wpdb) || !method_exists($wpdb, 'prepare') || !method_exists($wpdb, 'get_var')) {
+            return 0;
+        }
+        $table = $wpdb->prefix . 'sarmo_snappay_scans';
+        $observed_at = $wpdb->get_var($wpdb->prepare(
+            "SELECT observed_at FROM $table WHERE source_warning LIKE %s ORDER BY id DESC LIMIT 1",
+            '%429%'
+        ));
+        $observed_ts = $observed_at ? strtotime((string) $observed_at . ' UTC') : false;
+        if ($observed_ts === false || time() - $observed_ts >= self::PROVIDER_RATE_LIMIT_COOLDOWN) {
+            return 0;
+        }
+        $until = $observed_ts + self::PROVIDER_RATE_LIMIT_COOLDOWN;
+        $data['rate_limited_until'] = $until;
+        self::save($data);
+        return $until;
     }
 
     private static function digits(string $value): string {
@@ -34,9 +60,13 @@ final class Sarmo_SnappPay_Auth {
         if (!empty($data['challenge_at']) && time() - (int) $data['challenge_at'] <= self::CHALLENGE_TTL) {
             return false;
         }
+        if (self::provider_rate_limit_until($data) > time()) { return false; }
+        if (!empty($data['last_login_attempt_at']) && time() - (int) $data['last_login_attempt_at'] < self::LOGIN_COOLDOWN) {
+            return false;
+        }
         $data['phone'] = $phone;
         $data['login_armed_until'] = time() + self::LOGIN_ARM_TTL;
-        unset($data['session'], $data['otp'], $data['otp_at'], $data['challenge_at'], $data['otp_consumed_at']);
+        unset($data['otp'], $data['otp_at'], $data['challenge_at'], $data['otp_consumed_at']);
         self::save($data);
         return true;
     }
@@ -44,7 +74,7 @@ final class Sarmo_SnappPay_Auth {
     public static function receive_otp(string $code): bool {
         $code = preg_replace('/\D/', '', self::digits($code));
         $data = self::data();
-        if (!preg_match('/^[0-9]{4,8}$/', $code) ||
+        if (self::provider_rate_limit_until($data) > time() || !preg_match('/^[0-9]{4,8}$/', $code) ||
             empty($data['challenge_at']) || time() - (int) $data['challenge_at'] > self::CHALLENGE_TTL) {
             return false;
         }
@@ -56,6 +86,16 @@ final class Sarmo_SnappPay_Auth {
 
     public static function status(): string {
         $data = self::data();
+        $rate_limited_until = self::provider_rate_limit_until($data);
+        if ($rate_limited_until > time()) {
+            $time = wp_date('Y/m/d H:i', $rate_limited_until, new DateTimeZone('Asia/Tehran'));
+            return "اسنپ‌پی درخواست کد را با خطای ۴۲۹ محدود کرده است؛ تا $time هیچ درخواست تازه‌ای فرستاده نمی‌شود.";
+        }
+        if (!empty($data['last_login_attempt_at']) && time() - (int) $data['last_login_attempt_at'] < self::LOGIN_COOLDOWN) {
+            $until = (int) $data['last_login_attempt_at'] + self::LOGIN_COOLDOWN;
+            $time = wp_date('Y/m/d H:i', $until, new DateTimeZone('Asia/Tehran'));
+            return "برای جلوگیری از درخواست پیاپی، تلاش تازه تا $time بسته است.";
+        }
         if (!empty($data['challenge_at']) && time() - (int) $data['challenge_at'] <= self::CHALLENGE_TTL) {
             return 'درخواست ورود فعال است؛ فقط کد تازهٔ همین درخواست را بفرست. مهلت ۵ دقیقه است.';
         }
@@ -108,11 +148,14 @@ final class Sarmo_SnappPay_Auth {
 
     public static function get_auth(): WP_REST_Response {
         $data = self::data();
-        $armed = !empty($data['login_armed_until']) && (int) $data['login_armed_until'] >= time();
+        $rate_limited_until = self::provider_rate_limit_until($data);
+        $rate_limited = $rate_limited_until > time();
+        $armed = !$rate_limited && !empty($data['login_armed_until']) && (int) $data['login_armed_until'] >= time();
         return new WP_REST_Response([
             'phone' => $armed ? (string) ($data['phone'] ?? '') : '',
             'login_armed' => $armed,
             'session' => self::decrypt((string) ($data['session'] ?? '')),
+            'rate_limited_until' => $rate_limited ? $rate_limited_until : 0,
         ]);
     }
 
@@ -128,6 +171,9 @@ final class Sarmo_SnappPay_Auth {
         try {
             $data = self::data();
             $now = time();
+            if (self::provider_rate_limit_until($data) > $now) {
+                return new WP_Error('snappay_rate_limited', 'SnappPay has rate-limited SMS login; wait before retrying', ['status' => 429]);
+            }
             if (empty($data['phone']) || empty($data['login_armed_until']) || (int) $data['login_armed_until'] < $now) {
                 return new WP_Error('login_not_armed', 'Send /login in the owner Bale chat before requesting OTP', ['status' => 403]);
             }
@@ -143,7 +189,7 @@ final class Sarmo_SnappPay_Auth {
             $data['challenge_at'] = $now;
             $data['last_login_attempt_at'] = $now;
             self::save($data);
-            if (!Sarmo_SnappPay_Runtime::notify_owner('ورود اسنپ‌پی با اجازهٔ یک‌بارمصرف آغاز شد. کد پیامکی تازه را فقط پس از دریافت بفرست؛ مهلت ۵ دقیقه است.')) {
+            if (!Sarmo_SnappPay_Runtime::notify_owner('یک تلاش ورود به collector رسید؛ شماره فقط یک‌بار ارسال می‌شود. اگر اسنپ‌پی مرحلهٔ کد را باز کند، همین‌جا پیام جدا می‌آید. اگر پیامک نرسید کدی نفرست.')) {
                 unset($data['challenge_at']);
                 self::save($data);
                 return new WP_Error('bale_delivery_failed', 'Could not notify the owner in Bale', ['status' => 502]);
@@ -159,6 +205,15 @@ final class Sarmo_SnappPay_Auth {
         $data = self::data();
         if ($action === 'claim_login_attempt') {
             return self::claim_login();
+        }
+        if ($action === 'mark_rate_limited') {
+            $data['rate_limited_until'] = max(
+                (int) ($data['rate_limited_until'] ?? 0),
+                time() + self::PROVIDER_RATE_LIMIT_COOLDOWN
+            );
+            unset($data['login_armed_until'], $data['otp'], $data['otp_at'], $data['challenge_at'], $data['otp_consumed_at']);
+            self::save($data);
+            return new WP_REST_Response(['ok' => true, 'retry_after' => $data['rate_limited_until']]);
         }
         if ($action === 'take_otp') {
             $code = '';

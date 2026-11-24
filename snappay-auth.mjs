@@ -1,6 +1,23 @@
 const SEARCH_URL = 'https://app.snapppay.ir/search';
 const AUTH_PATH = '/wp-json/sarmo-monitor/v1/collector-auth';
 
+export function isOtpRateLimited(httpFailures = [], messages = []) {
+  const evidence = [...httpFailures, ...messages].map(value => String(value ?? '')).join(' ');
+  return /\b429\b|too\s+many|rate[ -]?limit|try\s+again\s+later|please\s+wait|تعداد\s+درخواست|بیش\s+از\s+حد|محدودیت|محدود\s+شده|دوباره\s+تلاش\s+کنید|صبر\s+کن/iu.test(evidence);
+}
+
+export function isProviderRateLimited(auth, now = Date.now()) {
+  return Number(auth?.rate_limited_until) > Math.floor(now / 1000);
+}
+
+async function markRateLimited(wp) {
+  try {
+    await wp(AUTH_PATH, {
+      method: 'POST', body: JSON.stringify({ action: 'mark_rate_limited' }),
+    });
+  } catch { /* The WordPress scan observation still lets the next version recover this lock. */ }
+}
+
 function isLogin(url) {
   try { return new URL(url).hostname === 'sso.snapppay.ir'; }
   catch { return false; }
@@ -26,6 +43,9 @@ async function abortChallenge(wp) {
 }
 
 export function assertLoginArmed(auth) {
+  if (isProviderRateLimited(auth)) {
+    throw new Error('SnappPay provider rate limit is active; SMS login remains blocked. Check /login_status before retrying');
+  }
   if (!auth?.login_armed) {
     throw new Error('SnappPay login required; send /login in the owner Bale chat to authorize one OTP attempt');
   }
@@ -44,8 +64,8 @@ export async function claimOneTimeLogin(wp, auth) {
   return phone;
 }
 
-export async function openSnappPay(browser, wp) {
-  const auth = await wp(AUTH_PATH);
+export async function openSnappPay(browser, wp, initialAuth = null) {
+  const auth = initialAuth || await wp(AUTH_PATH);
   const context = await browser.newContext({
     locale: 'fa-IR',
     ...(auth.session ? { storageState: auth.session } : {}),
@@ -82,9 +102,18 @@ export async function openSnappPay(browser, wp) {
         [...new Set(elements.map(element => element.getAttribute('data-testid')))].filter(Boolean).slice(0, 15));
       const messages = await page.locator('[data-testid*="error"], [data-testid*="toast"], [role="alert"]')
         .allTextContents().catch(() => []);
+      if (isOtpRateLimited(phoneFailures, messages)) {
+        await markRateLimited(wp);
+        throw new Error('SnappPay OTP rate limit (HTTP 429 or provider limit message); retries blocked for 12 hours');
+      }
       const safeMessages = messages.map(value => value.replace(/[0-9۰-۹٠-٩]/g, '#').trim().slice(0, 100))
         .filter(Boolean).slice(0, 2);
       throw new Error(`SnappPay phone step did not show OTP (host: ${new URL(page.url()).hostname}; messages: ${safeMessages.join(' | ') || 'none'}; testids: ${testids.join(',')}; HTTP: ${phoneFailures.join(',') || 'none'})`);
+    }
+
+    if (isOtpRateLimited(phoneFailures)) {
+      await markRateLimited(wp);
+      throw new Error('SnappPay OTP rate limit (HTTP 429); retries blocked for 12 hours');
     }
 
     const code = await waitForCode(wp);
