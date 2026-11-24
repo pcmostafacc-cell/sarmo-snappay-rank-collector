@@ -33,7 +33,7 @@ export async function openSnappPay(browser, wp) {
   if (!isLogin(page.url())) return { context, page };
   if (!auth.phone) throw new Error('SnappPay login required; set the phone with /login in Bale');
 
-  await page.locator('[data-testid="phone-input"]').fill(auth.phone, { timeout: 20000 });
+  await page.locator('[data-testid="phone-input"] input, input[data-testid="phone-input"]').first().fill(auth.phone, { timeout: 20000 });
   await page.locator('[data-testid="phone-submit-button"]').click();
   await page.locator('[data-testid="otp-input"]').waitFor({ timeout: 20000 });
   await wp(AUTH_PATH, {
