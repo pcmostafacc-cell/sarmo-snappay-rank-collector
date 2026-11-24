@@ -1,0 +1,27 @@
+name: Sarmo SnappPay rank collector
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '7,17,27,37,47,57 * * * *'
+permissions:
+  contents: read
+concurrency:
+  group: sarmo-snappay-collector
+  cancel-in-progress: false
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      SARMO_WP_URL: ${{ secrets.SARMO_WP_URL }}
+      SARMO_WP_USER: ${{ secrets.SARMO_WP_USER }}
+      SARMO_WP_APP_PASSWORD: ${{ secrets.SARMO_WP_APP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - run: npx playwright install chromium --with-deps
+      - run: node --test *.test.mjs
+      - run: node run-collector.mjs
