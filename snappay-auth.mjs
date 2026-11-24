@@ -55,8 +55,7 @@ export async function openSnappPay(browser, wp) {
       await otpInputs.nth(index).fill(code[index]);
     }
   } else {
-    await otpField.fill('');
-    await otpField.pressSequentially(code, { delay: 80 });
+    await otpField.fill(code);
   }
   const enteredCode = inputCount > 1
     ? (await Promise.all(Array.from({ length: inputCount }, (_, index) => otpInputs.nth(index).inputValue()))).join('')
