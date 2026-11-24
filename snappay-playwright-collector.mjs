@@ -17,8 +17,40 @@ export async function collectKeyword(page, query, identity, maxProducts = 120) {
   await input.fill(query);
   await input.press('Enter');
   await page.locator('[data-testid="search-result-input"]').waitFor({ timeout: 20000 });
-  await page.locator('[data-testid="product-item"]').first().waitFor({ timeout: 20000 });
+  let explicitNoResults = false;
+  try {
+    await page.locator('[data-testid="product-item"]').first().waitFor({ timeout: 20000 });
+  } catch {
+    explicitNoResults = await page.evaluate(() => {
+      const markers = [...document.querySelectorAll('[data-testid*="empty"], [data-testid*="no-result"], [data-testid*="no-results"]')]
+        .filter(element => element.getClientRects().length > 0);
+      const text = document.body.innerText || '';
+      return markers.length > 0 || /(نتیجه\s*ای\s*یافت\s*نشد|نتیجه‌ای\s*یافت\s*نشد|محصولی\s*یافت\s*نشد|هیچ\s*محصولی\s*پیدا\s*نشد|کالایی\s*پیدا\s*نشد)/u.test(text);
+    });
+    if (!explicitNoResults) {
+      throw new Error(`SnappPay returned no product cards and no explicit empty-results state for query: ${query}`);
+    }
+  }
   await page.waitForTimeout(1000);
+
+  if (explicitNoResults) {
+    const header = await page.evaluate(() => ({
+      displayedQuery: (() => {
+        const field = document.querySelector('[data-testid="search-result-input"]');
+        return (field?.value || field?.textContent || '').trim();
+      })(),
+      merchants: [...document.querySelectorAll('[data-testid="merchant-result"]')]
+        .map(el => el.querySelector('[data-testid="merchant-result-action"]')?.textContent?.trim() || ''),
+      banners: [...document.querySelectorAll('[data-testid="banner-item"]')]
+        .map(el => el.querySelector('p')?.textContent?.trim() || ''),
+      sourceWarning: [...document.querySelectorAll('[role="alert"]')]
+        .map(el => el.textContent?.trim()).filter(Boolean).join(' | ') || null,
+    }));
+    return summarizeRank({
+      query, observedAt: new Date().toISOString(), products: [], sequenceReliable: true,
+      scanComplete: true, explicitNoResults: true, ...header,
+    }, identity);
+  }
 
   const seen = new Map();
   let sequenceReliable = true;
@@ -40,12 +72,33 @@ export async function collectKeyword(page, query, identity, maxProducts = 120) {
       const scroll = grid || document.scrollingElement;
       const canScroll = !!scroll && scroll.scrollHeight > scroll.clientHeight + 80;
       return {
-        products: cards.map(card => ({
-          merchant: card.querySelector('[data-testid="merchant-name"]')?.textContent?.trim() || '',
-          title: card.querySelector('[data-testid="product-name"]')?.textContent?.trim() || '',
-          image: card.querySelector('img[src]')?.getAttribute('src') || '',
-          isAd: !!card.querySelector('[data-testid="ads-badge"]'),
-        })),
+        products: cards.map(card => {
+          const link = card.querySelector('a[href]');
+          const dataNode = card.querySelector('[data-product-id], [data-seller-id], [data-merchant-id]');
+          const fieldText = names => {
+            const element = [...card.querySelectorAll('[data-testid]')].find(node =>
+              names.some(name => (node.getAttribute('data-testid') || '').toLowerCase().includes(name)));
+            return (element?.getAttribute('data-value') || element?.textContent || '').trim();
+          };
+          return {
+            merchant: card.querySelector('[data-testid="merchant-name"]')?.textContent?.trim() || '',
+            title: card.querySelector('[data-testid="product-name"]')?.textContent?.trim() || '',
+            image: card.querySelector('img[src]')?.getAttribute('src') || '',
+            url: link?.href || '',
+            productId: card.getAttribute('data-product-id') ||
+              dataNode?.getAttribute('data-product-id') || '',
+            sellerId: card.getAttribute('data-seller-id') ||
+              card.getAttribute('data-merchant-id') || dataNode?.getAttribute('data-seller-id') ||
+              dataNode?.getAttribute('data-merchant-id') || '',
+            price: fieldText(['final-price', 'product-price', 'price']),
+            originalPrice: fieldText(['original-price', 'old-price', 'list-price']),
+            discount: fieldText(['discount', 'off-percent']),
+            rating: fieldText(['rating', 'score', 'star']),
+            reviewCount: fieldText(['review-count', 'rating-count', 'comment-count']),
+            availability: fieldText(['availability', 'stock-status']),
+            isAd: !!card.querySelector('[data-testid="ads-badge"]'),
+          };
+        }),
         atBottom: !canScroll || scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 5,
         canScroll,
       };
