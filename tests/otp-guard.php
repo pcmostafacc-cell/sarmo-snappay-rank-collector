@@ -45,7 +45,7 @@ $GLOBALS['options']['sarmo_monitor_snappay_auth'] = [
     'rate_limited_until' => time() + 3600,
     'session' => 'encrypted-session-placeholder',
 ];
-if (Sarmo_Snappay_Auth::set_phone($testPhone) !== false) {
+if (Sarmo_SnappPay_Auth::set_phone($testPhone) !== false) {
     fwrite(STDERR, "A login was armed during provider rate limit\n"); exit(1);
 }
 $state = $GLOBALS['options']['sarmo_monitor_snappay_auth'];
@@ -53,24 +53,24 @@ if (($state['session'] ?? '') !== 'encrypted-session-placeholder') {
     fwrite(STDERR, "Arming a blocked login discarded the saved session\n"); exit(1);
 }
 $GLOBALS['options']['sarmo_monitor_snappay_auth']['challenge_at'] = time();
-if (Sarmo_Snappay_Auth::receive_otp('123456') !== false) {
+if (Sarmo_SnappPay_Auth::receive_otp('123456') !== false) {
     fwrite(STDERR, "OTP was accepted while the provider lock was active\n"); exit(1);
 }
-if (!str_contains(Sarmo_Snappay_Auth::status(), '۴۲۹')) {
+if (!str_contains(Sarmo_SnappPay_Auth::status(), '۴۲۹')) {
     fwrite(STDERR, "Login status did not explain the provider 429 lock\n"); exit(1);
 }
 
 // Existing sanitized 429 observations reconstruct the lock after a plugin update.
 $GLOBALS['options']['sarmo_monitor_snappay_auth'] = ['session' => 'preserved'];
 $GLOBALS['wpdb']->observed_at = gmdate('Y-m-d H:i:s', time() - 60);
-if (Sarmo_Snappay_Auth::set_phone($testPhone) !== false) {
+if (Sarmo_SnappPay_Auth::set_phone($testPhone) !== false) {
     fwrite(STDERR, "A recent 429 observation did not block a new login\n"); exit(1);
 }
 $state = $GLOBALS['options']['sarmo_monitor_snappay_auth'];
 if ((int) ($state['rate_limited_until'] ?? 0) < time() + 11 * 3600) {
     fwrite(STDERR, "The reconstructed provider lock did not persist for 12 hours\n"); exit(1);
 }
-$auth = Sarmo_Snappay_Auth::get_auth();
+$auth = Sarmo_SnappPay_Auth::get_auth();
 if ((int) ($auth->data['rate_limited_until'] ?? 0) < time() + 11 * 3600) {
     fwrite(STDERR, "The collector auth response did not include the reconstructed retry time\n"); exit(1);
 }
@@ -81,7 +81,7 @@ if (($state['session'] ?? '') !== 'preserved') {
 // An expired lock and old 429 observation allow one fresh owner-authorized attempt.
 $GLOBALS['options']['sarmo_monitor_snappay_auth'] = ['rate_limited_until' => time() - 1];
 $GLOBALS['wpdb']->observed_at = gmdate('Y-m-d H:i:s', time() - 13 * 3600);
-if (Sarmo_Snappay_Auth::set_phone($testPhone) !== true) {
+if (Sarmo_SnappPay_Auth::set_phone($testPhone) !== true) {
     fwrite(STDERR, "A new login remained blocked after the provider cooldown expired\n"); exit(1);
 }
 $state = $GLOBALS['options']['sarmo_monitor_snappay_auth'];
