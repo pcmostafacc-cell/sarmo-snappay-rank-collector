@@ -1,0 +1,26 @@
+name: Sarmo SnappPay checks
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '*.mjs'
+      - 'package.json'
+      - 'wordpress-plugin/**/*.php'
+      - '.github/workflows/test.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: for file in wordpress-plugin/*.php; do php -l "$file"; done
+      - run: node --test *.test.mjs
+      - run: for file in *.mjs; do node --check "$file"; done
