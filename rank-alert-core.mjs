@@ -7,7 +7,9 @@ export function updateRankTarget(previous = {}, observation, options = {}) {
     lastRank: previous.lastRank ?? null,
   };
   const target = Number(options.targetRank);
-  const field = options.rankField === 'adRank' ? 'adRank' : 'gridRank';
+  const field = options.rankField === 'adRank'
+    ? 'adRank'
+    : options.rankField === 'gridRank' ? 'gridRank' : 'absoluteAdSlot';
   if (!Number.isInteger(target) || target < 1) throw new Error('Invalid target rank');
   if (!observation?.sourceValid || observation.observedAt === state.lastObservedAt) {
     // A failed fetch interrupts consecutive evidence without declaring a loss.
