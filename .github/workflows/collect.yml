@@ -1,13 +1,6 @@
 name: Sarmo SnappPay rank collector
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - '.github/workflows/collect.yml'
-      - '*.mjs'
-      - 'package.json'
-  schedule:
-    - cron: '7,17,27,37,47,57 * * * *'
 permissions:
   contents: read
 concurrency:
@@ -23,10 +16,4 @@ jobs:
       SARMO_WP_APP_PASSWORD: ${{ secrets.SARMO_WP_APP_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: npm install --no-audit --no-fund
-      - run: npx playwright install chromium --with-deps
-      - run: node --test *.test.mjs
-      - run: node run-collector.mjs
+      - run: echo 'Collector schedule paused during coordinated 0.6.0 deployment.'
