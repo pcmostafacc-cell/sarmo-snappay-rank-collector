@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "collect": "node run-collector.mjs",
+    "test": "node --test *.test.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.50.0"
+  }
+}
