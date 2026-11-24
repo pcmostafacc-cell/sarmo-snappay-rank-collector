@@ -19,3 +19,21 @@ assert.equal(feed('6', 2), 'rank_lost');
 assert.equal(feed('6', 2), null);
 assert.equal(feed('7', 1), null);
 assert.equal(feed('8', 1), 'recovered');
+
+const slotOptions = { targetRank: 1 };
+let slotState = {};
+function feedSlot(observedAt, absoluteAdSlot, sourceValid = true) {
+  const result = updateRankTarget(slotState, {
+    observedAt, absoluteAdSlot, sourceValid, scanComplete: true,
+  }, slotOptions);
+  slotState = result.state;
+  return result.event;
+}
+assert.equal(feedSlot('a', 2), null);
+assert.equal(feedSlot('b', 2), 'target_unmet');
+assert.equal(feedSlot('c', 1), null);
+assert.equal(feedSlot('d', 1), 'recovered');
+assert.equal(feedSlot('e', 2), null);
+assert.equal(feedSlot('f', null, false), null);
+assert.equal(feedSlot('g', 2), null);
+assert.equal(feedSlot('h', 2), 'rank_lost');
