@@ -145,7 +145,8 @@ final class Sarmo_SnappPay_Runtime {
             $warning = mb_substr($warning !== '' ? $warning : 'خطای نامشخص منبع پایش', 0, 180);
             $rate_limited = (bool) preg_match('/\b429\b|too\s+many|rate[ -]?limit|try\s+again\s+later|please\s+wait|تعداد\s+درخواست|بیش\s+از\s+حد|محدودیت|دوباره\s+تلاش\s+کنید|صبر\s+کن/iu', $warning);
             $signature = hash('sha256', $rate_limited ? 'snappay-provider-rate-limit' : $warning);
-            if (($state['status'] ?? 'ok') === 'failed' && hash_equals((string) ($state['warning_signature'] ?? ''), $signature)) {
+            if (!$rate_limited && ($state['status'] ?? 'ok') === 'failed' &&
+                hash_equals((string) ($state['warning_signature'] ?? ''), $signature)) {
                 return;
             }
             if ($rate_limited) {
@@ -154,14 +155,17 @@ final class Sarmo_SnappPay_Runtime {
                 $reason = "علت ثبت‌شده: $warning";
             }
             $last_global_rate_alert = (string) get_option('sarmo_monitor_rate_alert_signature', '');
-            $already_reported = $rate_limited && hash_equals($last_global_rate_alert, $signature);
+            $last_global_rate_alert_at = (int) get_option('sarmo_monitor_rate_alert_at', 0);
+            $already_reported = $rate_limited && hash_equals($last_global_rate_alert, $signature) &&
+                time() - $last_global_rate_alert_at < 300;
             if ($already_reported || self::send("⚠️ منبع پایش «{$row['query']}» نامعتبر است؛ افت رتبه اعلام نمی‌شود.\n$reason")) {
                 $states[$row['query']] = [
                     'status' => 'failed', 'since' => current_time('mysql', true),
                     'warning_signature' => $signature,
                 ];
-                if ($rate_limited) {
+                if ($rate_limited && !$already_reported) {
                     update_option('sarmo_monitor_rate_alert_signature', $signature, false);
+                    update_option('sarmo_monitor_rate_alert_at', time(), false);
                 }
                 update_option(self::HEALTH, $states, false);
             }

@@ -73,4 +73,20 @@ if (count($GLOBALS['wpdb']->inserted) !== 3) {
     fwrite(STDERR, 'Invalid source observations were not retained for all keywords\n'); exit(1);
 }
 
+// A later 429 incident is reported again even when that keyword was already failed.
+$GLOBALS['options']['sarmo_monitor_rate_alert_at'] = time() - 3600;
+Sarmo_SnappPay_Runtime::record([
+    'query' => 'روسری',
+    'observed_at' => gmdate('Y-m-d H:i:s'),
+    'source_valid' => false,
+    'source_warning' => $warning,
+    'grid_rank' => null,
+    'ad_rank' => null,
+    'absolute_ad_slot' => null,
+    'merchant_rank' => null,
+], new WP_REST_Request(['details' => [], 'scanned_products' => 0]));
+if (count($GLOBALS['sent_messages']) !== 2) {
+    fwrite(STDERR, 'A later provider rate-limit incident was incorrectly suppressed\n'); exit(1);
+}
+
 echo "Source health notification checks passed.\n";
