@@ -1,5 +1,6 @@
 import { chromium } from 'playwright';
 import { collectKeyword } from './snappay-playwright-collector.mjs';
+import { openSnappPay } from './snappay-auth.mjs';
 
 const required = ['SARMO_WP_URL', 'SARMO_WP_USER', 'SARMO_WP_APP_PASSWORD'];
 for (const key of required) {
@@ -28,11 +29,17 @@ if (!queries.length) process.exit(0);
 
 const browser = await chromium.launch({ headless: true });
 try {
-  const context = await browser.newContext({ locale: 'fa-IR' });
-  const page = await context.newPage();
+  let page;
+  let authError = null;
+  try {
+    ({ page } = await openSnappPay(browser, wp));
+  } catch (error) {
+    authError = String(error).slice(0, 300);
+  }
   for (const query of queries) {
     let result;
     try {
+      if (authError) throw new Error(authError);
       result = await collectKeyword(page, query, { merchantAliases: ['سارمو استایل'] });
     } catch (error) {
       result = { query, sourceValid: false, sourceWarning: String(error).slice(0, 300) };
