@@ -244,6 +244,35 @@ final class Sarmo_SnappPay_Runtime {
         return self::send($message);
     }
 
+    public static function persistent_login(WP_REST_Request $request) {
+        $state = $request->get_param('state');
+        if (!in_array($state, ['required', 'scanned'], true)) {
+            return new WP_Error('bad_login_state', 'Unknown login state', ['status' => 400]);
+        }
+        $pending = (bool) get_option('sarmo_monitor_persistent_login_pending', false);
+        if ($pending === ($state === 'required')) {
+            return rest_ensure_response(['ok' => true]);
+        }
+        if ($state === 'required') {
+            $url = defined('SARMO_MONITOR_LOGIN_URL') ? SARMO_MONITOR_LOGIN_URL : '';
+            $parts = is_string($url) ? wp_parse_url($url) : false;
+            if (empty($parts['host']) || ($parts['scheme'] ?? '') !== 'https' ||
+                isset($parts['user']) || isset($parts['pass']) || isset($parts['query']) || isset($parts['fragment'])) {
+                return new WP_Error('missing_login_url', 'Configure a private HTTPS desktop gateway URL', ['status' => 503]);
+            }
+            $message = "اسنپ‌پی دوباره ورود می‌خواهد. این لینک را باز کن و در مرورگر جمع‌آورنده وارد شو. کد را مستقیم در خود اسنپ‌پی وارد کن.
+" . $url;
+        } else {
+            $message = "✅ اولین اسکن معتبر پس از درخواست ورود ثبت شد.
+" . self::report(false);
+        }
+        if (!self::notify_owner($message)) {
+            return new WP_Error('bale_delivery_failed', 'Bale did not accept the notice', ['status' => 502]);
+        }
+        update_option('sarmo_monitor_persistent_login_pending', $state === 'required', false);
+        return rest_ensure_response(['ok' => true]);
+    }
+
     public static function tick(): void {
         $settings = self::settings();
         if (empty($settings['token']) || empty($settings['owner_chat_id'])) { return; }

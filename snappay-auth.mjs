@@ -79,6 +79,12 @@ export async function openSnappPay(browser, wp, initialAuth = null) {
   }
   if (!isLogin(page.url())) return { context, page };
 
+  if (auth.manual_browser_login === true) {
+    const error = new Error('SnappPay requires a fresh manual login');
+    error.code = 'manual_login_required';
+    throw error;
+  }
+
   // Fail closed: scheduled runs cannot send an SMS unless the owner armed one login
   // attempt through Bale and WordPress atomically consumes that authorization.
   const phone = await claimOneTimeLogin(wp, auth);

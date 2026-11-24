@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Sarmo SnappPay Monitor
  * Description: Keyword targets, verified rank observations, and Bale reports for Sarmo.
- * Version: 0.7.0
+ * Version: 0.9.0
  * Requires PHP: 8.0
  * Text Domain: sarmo-snappay-monitor
  */
@@ -22,6 +22,7 @@ final class Sarmo_SnappPay_Monitor {
 
     public static function init(): void {
         add_action('admin_menu', [self::class, 'menu']);
+        add_action('admin_post_sarmo_monitor_test_login', [self::class, 'test_login']);
         add_action('admin_post_sarmo_monitor_save_keyword', [self::class, 'save_keyword']);
         add_action('admin_post_sarmo_monitor_remove_keyword', [self::class, 'remove_keyword']);
         add_action('rest_api_init', [self::class, 'routes']);
@@ -98,7 +99,8 @@ final class Sarmo_SnappPay_Monitor {
             'callback' => static function () {
                 return rest_ensure_response([
                     'api_version' => '0.7.0',
-                    'plugin_version' => '0.7.0',
+                    'plugin_version' => '0.9.0',
+                    'persistent_login' => true,
                     'max_keywords' => self::MAX_KEYWORDS,
                     'rank_fields' => ['grid_rank', 'ad_rank', 'absolute_ad_slot', 'merchant_rank'],
                     'otp_mode' => 'owner-armed-rate-limit-aware-one-time',
@@ -116,6 +118,11 @@ final class Sarmo_SnappPay_Monitor {
             'permission_callback' => static function () {
                 return current_user_can('manage_sarmo_monitor');
             },
+        ]);
+        register_rest_route('sarmo-monitor/v1', '/persistent-login', [
+            'methods' => 'POST',
+            'callback' => [Sarmo_SnappPay_Runtime::class, 'persistent_login'],
+            'permission_callback' => static fn() => current_user_can('manage_sarmo_monitor'),
         ]);
         register_rest_route('sarmo-monitor/v1', '/observations', [
             'methods' => 'POST',
@@ -157,6 +164,16 @@ final class Sarmo_SnappPay_Monitor {
         return rest_ensure_response($row);
     }
 
+    public static function test_login(): void {
+        if (!current_user_can('manage_options')) {
+            wp_die('Access denied', '', ['response' => 403]);
+        }
+        check_admin_referer('sarmo_monitor_test_login');
+        $status = Sarmo_SnappPay_Auth::arm_test() ? 'armed' : 'unavailable';
+        wp_safe_redirect(add_query_arg('test_login', $status, admin_url('tools.php?page=' . self::PAGE)));
+        exit;
+    }
+
     public static function page(): void {
         if (!current_user_can('manage_options')) {
             wp_die('Access denied', '', ['response' => 403]);
@@ -165,6 +182,28 @@ final class Sarmo_SnappPay_Monitor {
         $rows = (array) get_option(self::OBSERVATIONS, []);
         echo '<div class="wrap"><h1>پایش جایگاه اسنپ‌پی</h1>';
         echo '<p>رتبه فقط از مشاهدهٔ معتبر ثبت می‌شود. «جایگاه مطلق آگهی» شمارهٔ کارت در کل نتایج و «رتبه بین آگهی‌ها» شمارهٔ آن میان کارت‌های تبلیغاتی است.</p>';
+        echo '<p>' . esc_html(Sarmo_SnappPay_Auth::status()) . '</p>';
+        if (($_GET['test_login'] ?? '') === 'unavailable') {
+            echo '<p>تلاش آزمایشی ثبت نشد. شمارهٔ قبلی یا وضعیت ورود را بررسی کنید.</p>';
+        }
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+        echo '<input type="hidden" name="action" value="sarmo_monitor_test_login">';
+        wp_nonce_field('sarmo_monitor_test_login');
+        echo '<p><button class="button">اجازهٔ یک تلاش آزمایشی ورود با شمارهٔ ثبت‌شده</button></p></form>';
+        $codespace = Sarmo_SnappPay_Auth::codespace_name();
+        $admin_post = esc_url(admin_url('admin-post.php'));
+        echo '<h2>ورود دستی با GitHub Codespaces</h2>';
+        echo '<form method="post" action="' . $admin_post . '">';
+        echo '<input type="hidden" name="action" value="sarmo_monitor_codespace">';
+        wp_nonce_field('sarmo_monitor_codespace');
+        echo '<label>نام Codespace <input name="codespace_name" value="' . esc_attr($codespace) . '"></label> ';
+        echo '<button class="button">ذخیرهٔ نام</button></form>';
+        if ($codespace !== '') {
+            echo '<form method="post" action="' . $admin_post . '">';
+            echo '<input type="hidden" name="action" value="sarmo_monitor_codespace">';
+            wp_nonce_field('sarmo_monitor_codespace');
+            echo '<p><button class="button button-primary">باز کردن مرورگر ورود</button></p></form>';
+        }
         if (isset($_POST['sarmo_probe'])) {
             check_admin_referer('sarmo_monitor_probe');
             $result = wp_safe_remote_get('https://app.snapppay.ir/search/result?referrer=MAIN', [

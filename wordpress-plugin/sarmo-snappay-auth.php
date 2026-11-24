@@ -3,6 +3,10 @@ if (!defined('ABSPATH')) { exit; }
 
 final class Sarmo_SnappPay_Auth {
     private const OPTION = 'sarmo_monitor_snappay_auth';
+    private const CODESPACE = 'sarmo_monitor_codespace_name';
+    private const CODESPACE_GRANT = 'sarmo_monitor_codespace_grant';
+    private const CODESPACE_WAITING = 'sarmo_monitor_codespace_waiting';
+    private const CODESPACE_GRANT_PREFIX = 'sarmo_monitor_login_grant_';
     private const CLAIM_LOCK = 'sarmo_monitor_snappay_login_claim_lock';
     private const CHALLENGE_TTL = 300;
     private const LOGIN_ARM_TTL = 1800;
@@ -11,6 +15,7 @@ final class Sarmo_SnappPay_Auth {
 
     public static function init(): void {
         add_action('rest_api_init', [self::class, 'routes']);
+        add_action('admin_post_sarmo_monitor_codespace', [self::class, 'codespace_admin']);
     }
 
     private static function data(): array {
@@ -53,20 +58,31 @@ final class Sarmo_SnappPay_Auth {
         ]);
     }
 
-    public static function set_phone(string $phone): bool {
+    public static function arm_test(): bool {
+        $data = self::data();
+        return self::set_phone((string) ($data['phone'] ?? ''), true);
+    }
+
+    private static function test_armed(array $data): bool {
+        return !empty($data['test_login']) && (int) ($data['login_armed_until'] ?? 0) >= time();
+    }
+
+    public static function set_phone(string $phone, bool $test = false): bool {
+        if (self::codespace_name() !== '') { return false; }
         $phone = preg_replace('/\D/', '', self::digits($phone));
         if (!preg_match('/^09[0-9]{9}$/', $phone)) { return false; }
         $data = self::data();
         if (!empty($data['challenge_at']) && time() - (int) $data['challenge_at'] <= self::CHALLENGE_TTL) {
             return false;
         }
-        if (self::provider_rate_limit_until($data) > time()) { return false; }
+        if (!$test && self::provider_rate_limit_until($data) > time()) { return false; }
         if (!empty($data['last_login_attempt_at']) && time() - (int) $data['last_login_attempt_at'] < self::LOGIN_COOLDOWN) {
             return false;
         }
         $data['phone'] = $phone;
+        $data['test_login'] = $test;
         $data['login_armed_until'] = time() + self::LOGIN_ARM_TTL;
-        unset($data['otp'], $data['otp_at'], $data['challenge_at'], $data['otp_consumed_at']);
+        unset($data['test_challenge'], $data['otp'], $data['otp_at'], $data['challenge_at'], $data['otp_consumed_at']);
         self::save($data);
         return true;
     }
@@ -74,7 +90,7 @@ final class Sarmo_SnappPay_Auth {
     public static function receive_otp(string $code): bool {
         $code = preg_replace('/\D/', '', self::digits($code));
         $data = self::data();
-        if (self::provider_rate_limit_until($data) > time() || !preg_match('/^[0-9]{4,8}$/', $code) ||
+        if ((empty($data['test_challenge']) && self::provider_rate_limit_until($data) > time()) || !preg_match('/^[0-9]{4,8}$/', $code) ||
             empty($data['challenge_at']) || time() - (int) $data['challenge_at'] > self::CHALLENGE_TTL) {
             return false;
         }
@@ -85,8 +101,18 @@ final class Sarmo_SnappPay_Auth {
     }
 
     public static function status(): string {
+        if (self::codespace_name() !== '') {
+            return 'ورود دستی Codespaces فعال است. اگر اسنپ‌پی ورود بخواهد، از پیوند پنل پایش استفاده کن.';
+        }
         $data = self::data();
         $rate_limited_until = self::provider_rate_limit_until($data);
+        if (self::test_armed($data)) {
+            return 'یک تلاش آزمایشی برای اجرای بعدی جمع‌آورنده مجاز است.';
+        }
+        if (!empty($data['test_challenge']) && !empty($data['challenge_at']) &&
+            time() - (int) $data['challenge_at'] <= self::CHALLENGE_TTL) {
+            return 'تلاش آزمایشی در جریان است. اگر پیامک همین تلاش رسید، کد را بفرست.';
+        }
         if ($rate_limited_until > time()) {
             $time = wp_date('Y/m/d H:i', $rate_limited_until, new DateTimeZone('Asia/Tehran'));
             return "اسنپ‌پی درخواست کد را با خطای ۴۲۹ محدود کرده است؛ تا $time هیچ درخواست تازه‌ای فرستاده نمی‌شود.";
@@ -108,7 +134,144 @@ final class Sarmo_SnappPay_Auth {
         return 'نشست معتبر یا اجازهٔ ورود نداریم. برای یک تلاش ورود تازه، /login شماره‌موبایل را بفرست.';
     }
 
+    public static function codespace_name(): string {
+        return (string) get_option(self::CODESPACE, '');
+    }
+
+    private static function codespace_origin(): string {
+        return 'https://' . self::codespace_name() . '-6080.app.github.dev';
+    }
+
+    public static function codespace_admin(): void {
+        if (!current_user_can('manage_options')) {
+            wp_die('Access denied', '', ['response' => 403]);
+        }
+        check_admin_referer('sarmo_monitor_codespace');
+        $panel = admin_url('tools.php?page=sarmo-snappay-monitor');
+        $prior = (string) get_option(self::CODESPACE_GRANT, '');
+        if ($prior !== '') { delete_option(self::CODESPACE_GRANT_PREFIX . $prior); }
+        delete_option(self::CODESPACE_GRANT);
+        if (isset($_POST['codespace_name'])) {
+            $name = trim((string) wp_unslash($_POST['codespace_name']));
+            if ($name !== '' && !preg_match('/^[a-z0-9][a-z0-9-]{0,80}$/D', $name)) {
+                wp_die('Invalid GitHub Codespace name', '', ['response' => 400]);
+            }
+            update_option(self::CODESPACE, $name, false);
+            delete_option(self::CODESPACE_WAITING);
+            wp_safe_redirect($panel);
+            exit;
+        }
+        if (self::codespace_name() === '') {
+            wp_safe_redirect($panel);
+            exit;
+        }
+        $grant = bin2hex(random_bytes(32));
+        $hash = hash('sha256', $grant);
+        if (!add_option(self::CODESPACE_GRANT_PREFIX . $hash, time() + 720, '', false)) {
+            wp_die('Could not create a login authorization', '', ['response' => 500]);
+        }
+        update_option(self::CODESPACE_GRANT, $hash, false);
+        nocache_headers();
+        header('Referrer-Policy: no-referrer');
+        // The destination is derived from the validated Codespace name. The grant
+        // is in the fragment so it does not appear in GitHub HTTP request logs.
+        wp_redirect(self::codespace_origin() . '/#grant=' . $grant, 303);
+        exit;
+    }
+
+    public static function receive_codespace_session(WP_REST_Request $request) {
+        $grant = $request->get_param('grant');
+        if (self::codespace_name() === '' || !is_string($grant) || !preg_match('/^[a-f0-9]{64}$/D', $grant)) {
+            return new WP_Error('bad_grant', 'Invalid login authorization', ['status' => 403]);
+        }
+        $hash = hash('sha256', $grant);
+        $option = self::CODESPACE_GRANT_PREFIX . $hash;
+        if (!hash_equals((string) get_option(self::CODESPACE_GRANT, ''), $hash) || (int) get_option($option, 0) <= time()) {
+            return new WP_Error('bad_grant', 'Invalid or expired login authorization', ['status' => 403]);
+        }
+        if (strlen($request->get_body()) > 151000) {
+            return new WP_Error('too_large', 'Session document exceeds the limit', ['status' => 413]);
+        }
+        if ($request->get_param('check') === true) {
+            $response = new WP_REST_Response(['ok' => true]);
+            $response->header('Cache-Control', 'no-store');
+            return $response;
+        }
+        $state = $request->get_param('session');
+        if (!self::valid_codespace_session($state)) {
+            return new WP_Error('bad_session', 'Invalid SnappPay session', ['status' => 400]);
+        }
+        $encrypted = self::encrypt($state);
+        if ($encrypted === '') {
+            return new WP_Error('bad_session', 'Could not store the session', ['status' => 400]);
+        }
+        if (!delete_option($option)) {
+            return new WP_Error('bad_grant', 'Login authorization was already used', ['status' => 403]);
+        }
+        $data = self::data();
+        $data['session'] = $encrypted;
+        $data['last_auth_success_at'] = time();
+        unset($data['login_armed_until'], $data['test_login'], $data['test_challenge'], $data['challenge_at'], $data['otp'], $data['otp_at'], $data['otp_consumed_at']);
+        self::save($data);
+        update_option(self::CODESPACE_WAITING, 'imported', false);
+        $response = new WP_REST_Response(['ok' => true]);
+        $response->header('Cache-Control', 'no-store');
+        return $response;
+    }
+
+    private static function valid_codespace_session($state): bool {
+        $hosts = ['snapppay.ir', 'app.snapppay.ir', 'sso.snapppay.ir'];
+        if (!is_array($state) || !is_array($state['cookies'] ?? null) || !$state['cookies'] || !is_array($state['origins'] ?? null)) {
+            return false;
+        }
+        foreach ($state['cookies'] as $cookie) {
+            if (!is_array($cookie) || !is_string($cookie['domain'] ?? null) ||
+                !in_array(ltrim($cookie['domain'], '.'), $hosts, true)) { return false; }
+        }
+        foreach ($state['origins'] as $entry) {
+            if (!is_array($entry) || !is_string($entry['origin'] ?? null) ||
+                !in_array($entry['origin'], array_map(static fn($host) => 'https://' . $host, $hosts), true)) { return false; }
+        }
+        return true;
+    }
+
+    public static function codespace_status(string $state): bool {
+        $waiting = (string) get_option(self::CODESPACE_WAITING, '');
+        if ($state === 'required') {
+            if ($waiting === 'notified') { return true; }
+            $panel = admin_url('tools.php?page=sarmo-snappay-monitor');
+            $startup = 'https://github.com/codespaces/' . self::codespace_name();
+            $text = "اسنپ‌پی دوباره ورود می‌خواهد. Codespace را از این لینک باز کن:\n$startup\nسپس در پنل پایش روی «باز کردن مرورگر ورود» بزن و کد را در خود اسنپ‌پی وارد کن:\n$panel";
+        } elseif ($state === 'scanned' && $waiting === 'imported') {
+            $text = '✅ اولین اسکن معتبر با نشست جدید ثبت شد. برای دیدن رتبه‌ها /report را بفرست.';
+        } else {
+            return true;
+        }
+        if (!Sarmo_SnappPay_Runtime::notify_owner($text)) { return false; }
+        update_option(self::CODESPACE_WAITING, $state === 'required' ? 'notified' : '', false);
+        return true;
+    }
+
     public static function routes(): void {
+        register_rest_route('sarmo-monitor/v1', '/codespaces-session', [
+            'methods' => 'POST',
+            'callback' => [self::class, 'receive_codespace_session'],
+            'permission_callback' => '__return_true', // The callback consumes an admin-issued one-time grant.
+        ]);
+        register_rest_route('sarmo-monitor/v1', '/codespaces-status', [
+            'methods' => 'POST',
+            'callback' => static function (WP_REST_Request $request) {
+                $state = $request->get_param('state');
+                if (self::codespace_name() === '' || !in_array($state, ['required', 'scanned'], true)) {
+                    return new WP_Error('bad_state', 'Invalid login state', ['status' => 400]);
+                }
+                if (!self::codespace_status($state)) {
+                    return new WP_Error('bale_delivery_failed', 'Bale did not accept the notice', ['status' => 502]);
+                }
+                return rest_ensure_response(['ok' => true]);
+            },
+            'permission_callback' => static fn() => current_user_can('manage_sarmo_monitor'),
+        ]);
         register_rest_route('sarmo-monitor/v1', '/collector-auth', [
             'methods' => 'GET',
             'callback' => [self::class, 'get_auth'],
@@ -149,17 +312,23 @@ final class Sarmo_SnappPay_Auth {
     public static function get_auth(): WP_REST_Response {
         $data = self::data();
         $rate_limited_until = self::provider_rate_limit_until($data);
-        $rate_limited = $rate_limited_until > time();
+        $rate_limited = $rate_limited_until > time() && !self::test_armed($data);
         $armed = !$rate_limited && !empty($data['login_armed_until']) && (int) $data['login_armed_until'] >= time();
-        return new WP_REST_Response([
+        $response = new WP_REST_Response([
+            'manual_browser_login' => self::codespace_name() !== '',
             'phone' => $armed ? (string) ($data['phone'] ?? '') : '',
             'login_armed' => $armed,
             'session' => self::decrypt((string) ($data['session'] ?? '')),
             'rate_limited_until' => $rate_limited ? $rate_limited_until : 0,
         ]);
+        $response->header('Cache-Control', 'no-store, private');
+        return $response;
     }
 
     private static function claim_login(): WP_REST_Response|WP_Error {
+        if (self::codespace_name() !== '') {
+            return new WP_Error('manual_login_only', 'Use the private login browser', ['status' => 403]);
+        }
         $lock_at = (int) get_option(self::CLAIM_LOCK, 0);
         if ($lock_at && time() - $lock_at < 120) {
             return new WP_Error('login_claim_busy', 'A login attempt is already being claimed', ['status' => 409]);
@@ -171,7 +340,7 @@ final class Sarmo_SnappPay_Auth {
         try {
             $data = self::data();
             $now = time();
-            if (self::provider_rate_limit_until($data) > $now) {
+            if (!self::test_armed($data) && self::provider_rate_limit_until($data) > $now) {
                 return new WP_Error('snappay_rate_limited', 'SnappPay has rate-limited SMS login; wait before retrying', ['status' => 429]);
             }
             if (empty($data['phone']) || empty($data['login_armed_until']) || (int) $data['login_armed_until'] < $now) {
@@ -184,13 +353,14 @@ final class Sarmo_SnappPay_Auth {
                 return new WP_Error('login_cooldown', 'Wait before requesting another SnappPay login code', ['status' => 429]);
             }
 
+            $data['test_challenge'] = self::test_armed($data);
             // Consume the one-time Bale authorization before the browser can request an SMS.
-            unset($data['login_armed_until'], $data['otp'], $data['otp_at'], $data['otp_consumed_at']);
+            unset($data['test_login'], $data['login_armed_until'], $data['otp'], $data['otp_at'], $data['otp_consumed_at']);
             $data['challenge_at'] = $now;
             $data['last_login_attempt_at'] = $now;
             self::save($data);
-            if (!Sarmo_SnappPay_Runtime::notify_owner('یک تلاش ورود به collector رسید؛ شماره فقط یک‌بار ارسال می‌شود. اگر اسنپ‌پی مرحلهٔ کد را باز کند، همین‌جا پیام جدا می‌آید. اگر پیامک نرسید کدی نفرست.')) {
-                unset($data['challenge_at']);
+            if (!Sarmo_SnappPay_Runtime::notify_owner('یک تلاش ورود به collector رسید؛ شماره فقط یک‌بار ارسال می‌شود. فقط اگر پیامک همین تلاش به دستت رسید، کد را در همین گفتگو بفرست.')) {
+                unset($data['test_challenge'], $data['challenge_at']);
                 self::save($data);
                 return new WP_Error('bale_delivery_failed', 'Could not notify the owner in Bale', ['status' => 502]);
             }
@@ -211,7 +381,7 @@ final class Sarmo_SnappPay_Auth {
                 (int) ($data['rate_limited_until'] ?? 0),
                 time() + self::PROVIDER_RATE_LIMIT_COOLDOWN
             );
-            unset($data['login_armed_until'], $data['otp'], $data['otp_at'], $data['challenge_at'], $data['otp_consumed_at']);
+            unset($data['test_login'], $data['test_challenge'], $data['login_armed_until'], $data['otp'], $data['otp_at'], $data['challenge_at'], $data['otp_consumed_at']);
             self::save($data);
             return new WP_REST_Response(['ok' => true, 'retry_after' => $data['rate_limited_until']]);
         }
@@ -222,14 +392,14 @@ final class Sarmo_SnappPay_Auth {
                 $code = (string) ($data['otp'] ?? '');
             }
             if ($code !== '') {
-                unset($data['otp'], $data['otp_at'], $data['challenge_at']);
+                unset($data['test_challenge'], $data['otp'], $data['otp_at'], $data['challenge_at']);
                 $data['otp_consumed_at'] = time();
                 self::save($data);
             }
             return new WP_REST_Response(['code' => $code]);
         }
         if ($action === 'abort_challenge') {
-            unset($data['otp'], $data['otp_at'], $data['challenge_at'], $data['otp_consumed_at']);
+            unset($data['test_challenge'], $data['otp'], $data['otp_at'], $data['challenge_at'], $data['otp_consumed_at']);
             self::save($data);
             return new WP_REST_Response(['ok' => true]);
         }
@@ -244,7 +414,7 @@ final class Sarmo_SnappPay_Auth {
             }
             $data['session'] = $encrypted;
             $data['last_auth_success_at'] = time();
-            unset($data['otp'], $data['otp_at'], $data['challenge_at'], $data['otp_consumed_at'], $data['login_armed_until']);
+            unset($data['test_challenge'], $data['otp'], $data['otp_at'], $data['challenge_at'], $data['otp_consumed_at'], $data['login_armed_until']);
             self::save($data);
             Sarmo_SnappPay_Runtime::notify_owner('✅ ورود اسنپ‌پی تأیید شد و نشست ذخیره شد. پایش می‌تواند ادامه یابد.');
             return new WP_REST_Response(['ok' => true]);

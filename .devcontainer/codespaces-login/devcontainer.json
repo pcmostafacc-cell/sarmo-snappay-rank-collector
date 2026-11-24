@@ -1,0 +1,13 @@
+{
+  "name": "Sarmo SnappPay manual login",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm",
+  "remoteUser": "node",
+  "forwardPorts": [6080],
+  "portsAttributes": {
+    "6080": { "label": "SnappPay private login", "onAutoForward": "notify" }
+  },
+  "otherPortsAttributes": { "onAutoForward": "ignore" },
+  "postCreateCommand": "bash codespaces-login/install.sh",
+  "postStartCommand": "bash codespaces-login/start.sh",
+  "waitFor": "postCreateCommand"
+}

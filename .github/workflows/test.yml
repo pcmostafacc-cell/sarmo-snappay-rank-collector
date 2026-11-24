@@ -7,6 +7,8 @@ on:
       - 'package.json'
       - 'wordpress-plugin/**/*.php'
       - 'tests/**/*.php'
+      - 'codespaces-login/**'
+      - '.devcontainer/**'
       - '.github/workflows/test.yml'
 permissions:
   contents: read
@@ -29,5 +31,7 @@ jobs:
       - run: php tests/otp-guard.php
       - run: php tests/source-health.php
       - run: php tests/market-report.php
-      - run: node --test *.test.mjs
+      - run: node --test *.test.mjs codespaces-login/*.test.mjs
+      - run: for file in codespaces-login/*.sh; do bash -n "$file" || exit; done
+      - run: node --check codespaces-login/server.mjs && node --check codespaces-login/portal.js
       - run: for file in *.mjs; do node --check "$file"; done
