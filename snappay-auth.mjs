@@ -43,7 +43,17 @@ export async function openSnappPay(browser, wp) {
   const otpField = page.locator('[data-testid="otp-input"] input, input[data-testid="otp-input"]').first();
   await otpField.pressSequentially(code, { delay: 80 });
   await page.locator('[data-testid="otp-submit-button"]').click();
-  await page.waitForURL(url => url.hostname === 'app.snapppay.ir', { timeout: 30000 });
+  try {
+    await page.waitForURL(url => url.hostname === 'app.snapppay.ir', {
+      timeout: 30000, waitUntil: 'commit',
+    });
+  } catch {
+    const host = new URL(page.url()).hostname;
+    const alerts = (await page.locator('[role="alert"]').allTextContents().catch(() => []))
+      .map(value => value.trim()).filter(Boolean).slice(0, 2);
+    throw new Error('SnappPay did not return after OTP (host: ' + host + '; alerts: ' + (alerts.join(' | ') || 'none') + ')');
+  }
+  await page.locator('[data-testid="search-typing-input"]').waitFor({ timeout: 20000 });
   await wp(AUTH_PATH, {
     method: 'POST', body: JSON.stringify({
       action: 'save_session', session: await context.storageState(),
