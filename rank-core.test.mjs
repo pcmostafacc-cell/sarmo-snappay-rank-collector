@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { normalizeFa, ownsProduct, summarizeRank } from './rank-core.mjs';
+import { normalizeFa, ownsProduct, productKey, summarizeRank } from './rank-core.mjs';
 
 assert.equal(normalizeFa('سارمو‌ استايل'), 'سارمو استایل');
 const identity = { merchantAliases: ['سارمو استایل'], productKeys: [] };
@@ -9,6 +9,8 @@ const products = [
   { merchant: 'سارمو استایل', title: 'روسری ۲', image: '3', isAd: true },
 ];
 assert.equal(ownsProduct(products[1], identity), false);
+assert.equal(ownsProduct({ sellerId: 'seller-7', title: 'item' }, { sellerIds: ['seller-7'] }), true);
+assert.equal(productKey({ productId: '42', title: 'one' }), productKey({ productId: '42', title: 'changed' }));
 const rank = summarizeRank({
   query: 'روسری', displayedQuery: 'روسری', observedAt: '2026-11-24T00:00:00Z',
   merchants: ['رقیب', 'سارمو استایل'], banners: ['رقیب'],
@@ -16,6 +18,7 @@ const rank = summarizeRank({
 }, identity);
 assert.equal(rank.gridRank, 3);
 assert.equal(rank.adRank, 2);
+assert.equal(rank.absoluteAdSlot, 3);
 assert.equal(rank.merchantCarouselRank, 2);
 assert.equal(rank.bannerRank, null);
 assert.equal(rank.scanComplete, false);
@@ -29,4 +32,12 @@ assert.equal(summarizeRank({
   query:'روسری',displayedQuery:'روسری',products,
   sourceWarning:'مشکلی پیش آمده، فیلتر اعمال نشد!',
   sequenceReliable:true,scanComplete:true,
+},identity).sourceValid,false);
+assert.equal(summarizeRank({
+  query:'عبا',displayedQuery:'عبا',products:[],sequenceReliable:true,
+  scanComplete:true,explicitNoResults:true,
+},identity).sourceValid,true);
+assert.equal(summarizeRank({
+  query:'عبا',displayedQuery:'عبا',products:[],sequenceReliable:true,
+  scanComplete:true,
 },identity).sourceValid,false);
