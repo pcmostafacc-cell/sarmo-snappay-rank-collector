@@ -40,7 +40,9 @@ export async function openSnappPay(browser, wp) {
     method: 'POST', body: JSON.stringify({ action: 'begin_challenge' }),
   });
   const code = await waitForCode(wp);
-  const otpField = page.locator('[data-testid="otp-input"] input, input[data-testid="otp-input"]').first();
+  const otpInputs = page.locator('[data-testid="otp-input"] input');
+  const inputCount = await otpInputs.count();
+  const otpField = inputCount ? otpInputs.first() : page.locator('input[data-testid="otp-input"]').first();
   const failedResponses = [];
   page.on('response', response => {
     if (response.status() >= 400 && failedResponses.length < 5) {
@@ -48,7 +50,20 @@ export async function openSnappPay(browser, wp) {
       if (url.hostname.endsWith('snapppay.ir')) failedResponses.push(response.status() + ' ' + url.hostname);
     }
   });
-  await otpField.pressSequentially(code, { delay: 80 });
+  if (inputCount === code.length && inputCount > 1) {
+    for (let index = 0; index < code.length; index++) {
+      await otpInputs.nth(index).fill(code[index]);
+    }
+  } else {
+    await otpField.fill('');
+    await otpField.pressSequentially(code, { delay: 80 });
+  }
+  const enteredCode = inputCount > 1
+    ? (await Promise.all(Array.from({ length: inputCount }, (_, index) => otpInputs.nth(index).inputValue()))).join('')
+    : await otpField.inputValue();
+  if (enteredCode !== code) {
+    throw new Error('SnappPay OTP input mismatch (fields ' + inputCount + '; expected length ' + code.length + '; entered length ' + enteredCode.length + ')');
+  }
   const submit = page.locator('[data-testid="otp-submit-button"]');
   await submit.waitFor({ timeout: 10000 });
   await submit.click();
