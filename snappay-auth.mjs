@@ -33,9 +33,28 @@ export async function openSnappPay(browser, wp) {
   if (!isLogin(page.url())) return { context, page };
   if (!auth.phone) throw new Error('SnappPay login required; set the phone with /login in Bale');
 
+  const phoneFailures = [];
+  page.on('response', response => {
+    if (response.status() >= 400 && phoneFailures.length < 5) {
+      try {
+        const url = new URL(response.url());
+        if (url.hostname.endsWith('snapppay.ir')) phoneFailures.push(`${response.status()} ${url.hostname}`);
+      } catch { /* Ignore non-URL responses. */ }
+    }
+  });
   await page.locator('[data-testid="phone-input"] input, input[data-testid="phone-input"]').first().fill(auth.phone, { timeout: 20000 });
   await page.locator('[data-testid="phone-submit-button"]').click();
-  await page.locator('[data-testid="otp-input"]').waitFor({ timeout: 20000 });
+  try {
+    await page.locator('[data-testid="otp-input"]').waitFor({ timeout: 20000 });
+  } catch {
+    const testids = await page.locator('[data-testid]').evaluateAll(elements =>
+      [...new Set(elements.map(element => element.getAttribute('data-testid')))].filter(Boolean).slice(0, 15));
+    const messages = await page.locator('[data-testid*="error"], [data-testid*="toast"], [role="alert"]')
+      .allTextContents().catch(() => []);
+    const safeMessages = messages.map(value => value.replace(/[0-9۰-۹٠-٩]/g, '#').trim().slice(0, 100))
+      .filter(Boolean).slice(0, 2);
+    throw new Error(`SnappPay phone step did not show OTP (host: ${new URL(page.url()).hostname}; messages: ${safeMessages.join(' | ') || 'none'}; testids: ${testids.join(',')}; HTTP: ${phoneFailures.join(',') || 'none'})`);
+  }
   await wp(AUTH_PATH, {
     method: 'POST', body: JSON.stringify({ action: 'begin_challenge' }),
   });
@@ -47,7 +66,7 @@ export async function openSnappPay(browser, wp) {
   page.on('response', response => {
     if (response.status() >= 400 && failedResponses.length < 5) {
       const url = new URL(response.url());
-      if (url.hostname.endsWith('snapppay.ir')) failedResponses.push(response.status() + ' ' + url.hostname);
+      if (url.hostname.endsWith('snapppay.ir')) failedResponses.push(`${response.status()} ${url.hostname}`);
     }
   });
   if (inputCount === code.length && inputCount > 1) {
@@ -61,7 +80,7 @@ export async function openSnappPay(browser, wp) {
     ? (await Promise.all(Array.from({ length: inputCount }, (_, index) => otpInputs.nth(index).inputValue()))).join('')
     : await otpField.inputValue();
   if (enteredCode !== code) {
-    throw new Error('SnappPay OTP input mismatch (fields ' + inputCount + '; expected length ' + code.length + '; entered length ' + enteredCode.length + ')');
+    throw new Error(`SnappPay OTP input mismatch (fields ${inputCount}; expected length ${code.length}; entered length ${enteredCode.length})`);
   }
   const submit = page.locator('[data-testid="otp-submit-button"]');
   await submit.waitFor({ timeout: 10000 });
@@ -80,7 +99,7 @@ export async function openSnappPay(browser, wp) {
       .allTextContents().catch(() => []);
     const safeMessages = messages.map(value => value.replace(/[0-9۰-۹٠-٩]/g, '#').trim())
       .filter(Boolean).slice(0, 2);
-    throw new Error('SnappPay did not return after OTP (host: ' + host + '; alerts: ' + (alerts.join(' | ') || 'none') + '; messages: ' + (safeMessages.join(' | ') || 'none') + '; testids: ' + testids.join(',') + '; HTTP: ' + (failedResponses.join(',') || 'none') + ')');
+    throw new Error(`SnappPay did not return after OTP (host: ${host}; alerts: ${alerts.join(' | ') || 'none'}; messages: ${safeMessages.join(' | ') || 'none'}; testids: ${testids.join(',')}; HTTP: ${failedResponses.join(',') || 'none'})`);
   }
   await page.locator('[data-testid="search-typing-input"]').waitFor({ timeout: 20000 });
   await wp(AUTH_PATH, {
