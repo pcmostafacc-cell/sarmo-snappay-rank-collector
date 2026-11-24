@@ -6,7 +6,14 @@ const SEARCH_URL = 'https://app.snapppay.ir/search';
 
 export async function collectKeyword(page, query, identity, maxProducts = 120) {
   await page.goto(SEARCH_URL, { waitUntil: 'domcontentloaded' });
-  const input = page.getByRole('searchbox');
+  const input = page.locator('[data-testid="search-typing-input"]');
+  try {
+    await input.waitFor({ timeout: 20000 });
+  } catch (error) {
+    const url = page.url();
+    const visible = await page.locator('body').innerText().catch(() => '');
+    throw new Error(`SnappPay search input unavailable at ${url}; page: ${visible.slice(0, 180)}`, { cause: error });
+  }
   await input.fill(query);
   await input.press('Enter');
   await page.locator('[data-testid="search-result-input"]').waitFor({ timeout: 20000 });
