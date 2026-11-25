@@ -3,6 +3,7 @@ declare(strict_types=1);
 define('ABSPATH', __DIR__ . '/');
 function sanitize_text_field(string $value): string { return trim(strip_tags($value)); }
 function get_option(string $key, $default = null) { return $GLOBALS['options'][$key] ?? $default; }
+function update_option(string $key, $value, bool $autoload): bool { $GLOBALS['options'][$key] = $value; return true; }
 function wp_date(string $format, int $time, DateTimeZone $zone): string {
     return (new DateTimeImmutable('@' . $time))->setTimezone($zone)->format($format);
 }
@@ -24,6 +25,7 @@ $input = [
 $data = Sarmo_SnappPay_Ads::snapshot($input, ['عبا' => []]);
 if (!$data) { throw new RuntimeException('Valid complete snapshot rejected.'); }
 $GLOBALS['options']['sarmo_monitor_ads_snapshot'] = $data;
+$GLOBALS['options']['sarmo_snappay_keywords'] = ['عبا' => [], 'مانتو' => []];
 $detail = Sarmo_SnappPay_Ads::detail($id, static fn($keyword) => "رتبهٔ $keyword");
 foreach (['4,980,000 تومان', '49,520,000 تومان', '9,500 تومان', 'CTR 1.57٪', 'رتبهٔ عبا'] as $expected) {
     if (!str_contains($detail, $expected)) { throw new RuntimeException('Incomplete report: ' . $expected); }
@@ -38,5 +40,9 @@ if (!str_contains(Sarmo_SnappPay_Ads::bid_preview('نمونه 9000'), 'گزار�
 $input['complete'] = false;
 if (Sarmo_SnappPay_Ads::snapshot($input, []) !== null) {
     throw new RuntimeException('A partial import must not replace the active campaign list.');
+}
+if (!str_contains(Sarmo_SnappPay_Ads::link_keyword('نمونه | مانتو', $GLOBALS['options']['sarmo_snappay_keywords']), 'وصل شد') ||
+    !str_contains(Sarmo_SnappPay_Ads::detail($id, static fn($keyword) => "رتبهٔ $keyword"), 'رتبهٔ مانتو')) {
+    throw new RuntimeException('An explicit campaign mapping must be used over the import default.');
 }
 echo "Ads snapshot checks passed.\n";

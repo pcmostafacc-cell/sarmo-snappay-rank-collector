@@ -9,7 +9,7 @@ final class Sarmo_SnappPay_Runtime {
     private const WEBHOOK_UPDATE = 'sarmo_monitor_bale_last_update_id';
     private const HOOK = 'sarmo_monitor_tick';
     private const KEYWORDS = 'sarmo_snappay_keywords';
-    private const SCHEMA_VERSION = '0.7.0';
+    private const SCHEMA_VERSION = '0.11.0';
     private const MAX_KEYWORDS = 10;
 
     public static function init(): void {
@@ -57,7 +57,16 @@ final class Sarmo_SnappPay_Runtime {
                 'manage_sarmo_monitor' => true,
             ]);
         }
+        if (!get_role('sarmo_ads_reader')) {
+            add_role('sarmo_ads_reader', 'Sarmo SnappPay Ads Reader', [
+                'read' => true,
+                'manage_sarmo_ads_read' => true,
+            ]);
+        }
         $admin = get_role('administrator');
+        if ($admin && !$admin->has_cap('manage_sarmo_ads_read')) {
+            $admin->add_cap('manage_sarmo_ads_read');
+        }
         if ($admin && !$admin->has_cap('manage_sarmo_monitor')) {
             $admin->add_cap('manage_sarmo_monitor');
         }
@@ -273,18 +282,37 @@ final class Sarmo_SnappPay_Runtime {
         return rest_ensure_response(['ok' => true]);
     }
 
+    private static function cadence(string $argument = ''): string {
+        $current = (array) get_option('sarmo_monitor_report_cadence', ['minutes' => 60, 'mode' => 'rank']);
+        if ($argument !== '') {
+            if (!preg_match('/^(10|30|60|180)(?:\s+(rank|both))?$/iD', $argument, $parts)) {
+                return 'قالب: /cadence 30 both | دقیقه: 10، 30، 60، 180 | rank یا both';
+            }
+            $current = ['minutes' => (int) $parts[1], 'mode' => strtolower($parts[2] ?? $current['mode'])];
+            update_option('sarmo_monitor_report_cadence', $current, false);
+        }
+        $title = $current['mode'] === 'both' ? 'جایگاه و خلاصهٔ Ads' : 'جایگاه';
+        return 'گزارش ' . $title . ' هر ' . $current['minutes'] . ' دقیقه. پایش جایگاه جداگانه طبق برنامهٔ جمع‌آورنده انجام می‌شود.';
+    }
+
     public static function tick(): void {
         $settings = self::settings();
         if (empty($settings['token']) || empty($settings['owner_chat_id'])) { return; }
         $tz = new DateTimeZone('Asia/Tehran');
         $now = new DateTimeImmutable('now', $tz);
-        $hour = $now->format('Y-m-d-H');
         $day = $now->format('Y-m-d');
         $sent = (array) get_option(self::REPORTS, []);
-        if (($sent['hourly'] ?? '') !== $hour) {
-            if (self::send(self::report(false))) {
-                $sent['hourly'] = $hour;
+        $cadence = (array) get_option('sarmo_monitor_report_cadence', ['minutes' => 60, 'mode' => 'rank']);
+        $minutes = (int) ($cadence['minutes'] ?? 60);
+        if (!in_array($minutes, [10, 30, 60, 180], true)) { $minutes = 60; }
+        $minutesSinceMidnight = (int) $now->format('G') * 60 + (int) $now->format('i');
+        $bucket = $day . '-' . $minutes . '-' . intdiv($minutesSinceMidnight, $minutes);
+        if (($sent['periodic'] ?? '') !== $bucket) {
+            $message = self::report(false);
+            if (($cadence['mode'] ?? '') === 'both') {
+                $message .= "\n\n" . Sarmo_SnappPay_Ads::active_list('');
             }
+            if (self::send($message)) { $sent['periodic'] = $bucket; }
         }
         if ($now->format('H') === '09' && ($sent['daily'] ?? '') !== $day) {
             if (self::send(self::report(true))) {
@@ -301,7 +329,7 @@ final class Sarmo_SnappPay_Runtime {
 
     private static function report(bool $daily): string {
         $rules = (array) get_option(self::KEYWORDS, []);
-        $lines = [$daily ? 'گزارش روزانهٔ جایگاه سارمو' : 'گزارش ساعتی جایگاه سارمو'];
+        $lines = [$daily ? 'گزارش روزانهٔ جایگاه سارمو' : 'گزارش دوره‌ای جایگاه سارمو'];
         global $wpdb;
         foreach ($rules as $query => $rule) {
             $attempt = self::latest((string) $query, false);
@@ -385,7 +413,7 @@ final class Sarmo_SnappPay_Runtime {
         $reply = '';
         switch ($command) {
             case '/start': case '/help': case '/panel':
-                $reply = "/list\n/add کلیدواژه\n/remove کلیدواژه\n/report [کلیدواژه]\n/rank بازه کلیدواژه\n/ads [صفحه]\n/ad نام کمپین\n/bid_preview کمپین تومان\n/competitors کلیدواژه\n/campaign کلیدواژه جایگاه\n/campaign_off کلیدواژه\n/campaign_report [کلیدواژه]\n/catalog\n/recommend [کلیدواژه]\n/login شمارهٔ موبایل اسنپ‌پی\n/otp کد پیامک (فقط پس از درخواست ربات)\n/login_status\n/status";
+                $reply = "/list\n/add کلیدواژه\n/remove کلیدواژه\n/report [کلیدواژه]\n/rank بازه کلیدواژه\n/ads [صفحه]\n/ad نام کمپین\n/ad_link کمپین | کلیدواژه\n/cadence [10|30|60|180] [rank|both]\n/bid_preview کمپین تومان\n/competitors کلیدواژه\n/campaign کلیدواژه جایگاه\n/campaign_off کلیدواژه\n/campaign_report [کلیدواژه]\n/catalog\n/recommend [کلیدواژه]\n/login شمارهٔ موبایل اسنپ‌پی\n/otp کد پیامک (فقط پس از درخواست ربات)\n/login_status\n/login_links\n/status";
                 break;
             case '/list':
                 $lines = ['واژه‌های پایش:'];
@@ -460,6 +488,12 @@ final class Sarmo_SnappPay_Runtime {
             case '/ad':
                 $reply = Sarmo_SnappPay_Ads::detail($remainder, static fn(string $keyword): string => self::single_report($keyword));
                 break;
+            case '/cadence':
+                $reply = self::cadence($remainder);
+                break;
+            case '/ad_link':
+                $reply = Sarmo_SnappPay_Ads::link_keyword($remainder, $rules);
+                break;
             case '/bid_preview':
                 $reply = Sarmo_SnappPay_Ads::bid_preview($remainder);
                 break;
@@ -467,7 +501,7 @@ final class Sarmo_SnappPay_Runtime {
                 $reply = $query === '' ? self::report(false) : self::single_report($query);
                 break;
             case '/status':
-                $reply = "وضعیت پایش:\n" . self::report(false) . "\n\nورود: " . Sarmo_SnappPay_Auth::status() . "\nSearch Ads: منبع کمپین/هزینه متصل نیست.";
+                $reply = "وضعیت پایش:\n" . self::report(false) . "\n\nورود: " . Sarmo_SnappPay_Auth::status() . "\nSearch Ads: " . Sarmo_SnappPay_Ads::source_status();
                 break;
             case '/login':
                 if (Sarmo_SnappPay_Auth::set_phone($remainder)) {
@@ -481,6 +515,13 @@ final class Sarmo_SnappPay_Runtime {
                 $reply = Sarmo_SnappPay_Auth::receive_otp($code) ?
                     'کد دریافت شد و برای ورود استفاده می‌شود.' :
                     "کد ثبت نشد یا درخواست ورود فعال نیست.\n" . Sarmo_SnappPay_Auth::status();
+                break;
+            case '/login_links':
+                $name = Sarmo_SnappPay_Auth::codespace_name();
+                $reply = $name === '' ? 'مرورگر خصوصی ورود هنوز تنظیم نشده است.' :
+                    "۱. محیط خصوصی را روشن کن:\nhttps://github.com/codespaces/$name\n" .
+                    '۲. در پنل پایش دکمهٔ ورود بازار یا Ads را انتخاب کن:' . "\n" .
+                    admin_url('tools.php?page=sarmo-snappay-monitor');
                 break;
             case '/login_status':
                 $reply = Sarmo_SnappPay_Auth::status();
@@ -537,7 +578,7 @@ final class Sarmo_SnappPay_Runtime {
             $grid = (int) $latest['grid_rank'];
             $slot = (int) $latest['absolute_ad_slot'];
             $lines[] = 'آخرین اسکن معتبر ' . wp_date('Y/m/d H:i', $time, $tz) . ' تهران';
-            $lines[] = 'جایگاه در کل نتایج: ' . ($grid > 0 ? $grid : 'مشاهده نشد') .
+            $lines[] = 'جایگاه در کل نتایج: ' . ($grid > 0 ? $grid : 'تا عمق اسکن مشاهده نشد') .
                 ' | جایگاه مطلق آگهی: ' . ($slot > 0 ? $slot : 'مشاهده نشد');
         }
         $lines[] = 'بهترین جایگاه مطلق آگهی: ' . ($best ?? 'نامشخص') .

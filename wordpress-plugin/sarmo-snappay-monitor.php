@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Sarmo SnappPay Monitor
  * Description: Keyword targets, verified rank observations, and Bale reports for Sarmo.
- * Version: 0.10.0
+ * Version: 0.11.0
  * Requires PHP: 8.0
  * Text Domain: sarmo-snappay-monitor
  */
@@ -101,7 +101,7 @@ final class Sarmo_SnappPay_Monitor {
             'callback' => static function () {
                 return rest_ensure_response([
                     'api_version' => '0.7.0',
-                    'plugin_version' => '0.10.0',
+                    'plugin_version' => '0.11.0',
                     'persistent_login' => true,
                     'max_keywords' => self::MAX_KEYWORDS,
                     'rank_fields' => ['grid_rank', 'ad_rank', 'absolute_ad_slot', 'merchant_rank'],
@@ -204,7 +204,8 @@ final class Sarmo_SnappPay_Monitor {
             echo '<form method="post" action="' . $admin_post . '">';
             echo '<input type="hidden" name="action" value="sarmo_monitor_codespace">';
             wp_nonce_field('sarmo_monitor_codespace');
-            echo '<p><button class="button button-primary">باز کردن مرورگر ورود</button></p></form>';
+            echo '<p><button class="button button-primary">ورود به بازار اسنپ‌پی</button> ';
+            echo '<button class="button" name="login_scope" value="ads">ورود به پنل Ads</button></p></form>';
         }
         Sarmo_SnappPay_Ads::admin_panel();
         if (isset($_POST['sarmo_probe'])) {

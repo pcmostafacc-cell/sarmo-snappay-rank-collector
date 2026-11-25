@@ -5,6 +5,7 @@ final class Sarmo_SnappPay_Auth {
     private const OPTION = 'sarmo_monitor_snappay_auth';
     private const CODESPACE = 'sarmo_monitor_codespace_name';
     private const CODESPACE_GRANT = 'sarmo_monitor_codespace_grant';
+    private const ADS_SESSION = 'sarmo_monitor_ads_session';
     private const CODESPACE_WAITING = 'sarmo_monitor_codespace_waiting';
     private const CODESPACE_GRANT_PREFIX = 'sarmo_monitor_login_grant_';
     private const CLAIM_LOCK = 'sarmo_monitor_snappay_login_claim_lock';
@@ -165,9 +166,10 @@ final class Sarmo_SnappPay_Auth {
             wp_safe_redirect($panel);
             exit;
         }
+        $scope = ($_POST['login_scope'] ?? '') === 'ads' ? 'ads' : 'market';
         $grant = bin2hex(random_bytes(32));
         $hash = hash('sha256', $grant);
-        if (!add_option(self::CODESPACE_GRANT_PREFIX . $hash, time() + 720, '', false)) {
+        if (!add_option(self::CODESPACE_GRANT_PREFIX . $hash, ['expires' => time() + 720, 'scope' => $scope], '', false)) {
             wp_die('Could not create a login authorization', '', ['response' => 500]);
         }
         update_option(self::CODESPACE_GRANT, $hash, false);
@@ -186,19 +188,22 @@ final class Sarmo_SnappPay_Auth {
         }
         $hash = hash('sha256', $grant);
         $option = self::CODESPACE_GRANT_PREFIX . $hash;
-        if (!hash_equals((string) get_option(self::CODESPACE_GRANT, ''), $hash) || (int) get_option($option, 0) <= time()) {
+        $grantData = get_option($option, 0);
+        $scope = is_array($grantData) && ($grantData['scope'] ?? '') === 'ads' ? 'ads' : 'market';
+        $expires = is_array($grantData) ? (int) ($grantData['expires'] ?? 0) : (int) $grantData;
+        if (!hash_equals((string) get_option(self::CODESPACE_GRANT, ''), $hash) || $expires <= time()) {
             return new WP_Error('bad_grant', 'Invalid or expired login authorization', ['status' => 403]);
         }
         if (strlen($request->get_body()) > 151000) {
             return new WP_Error('too_large', 'Session document exceeds the limit', ['status' => 413]);
         }
         if ($request->get_param('check') === true) {
-            $response = new WP_REST_Response(['ok' => true]);
+            $response = new WP_REST_Response(['ok' => true, 'scope' => $scope]);
             $response->header('Cache-Control', 'no-store');
             return $response;
         }
         $state = $request->get_param('session');
-        if (!self::valid_codespace_session($state)) {
+        if (!self::valid_codespace_session($state, $scope)) {
             return new WP_Error('bad_session', 'Invalid SnappPay session', ['status' => 400]);
         }
         $encrypted = self::encrypt($state);
@@ -208,19 +213,24 @@ final class Sarmo_SnappPay_Auth {
         if (!delete_option($option)) {
             return new WP_Error('bad_grant', 'Login authorization was already used', ['status' => 403]);
         }
-        $data = self::data();
-        $data['session'] = $encrypted;
-        $data['last_auth_success_at'] = time();
-        unset($data['login_armed_until'], $data['test_login'], $data['test_challenge'], $data['challenge_at'], $data['otp'], $data['otp_at'], $data['otp_consumed_at']);
-        self::save($data);
-        update_option(self::CODESPACE_WAITING, 'imported', false);
+        if ($scope === 'ads') {
+            update_option(self::ADS_SESSION, $encrypted, false);
+        } else {
+            $data = self::data();
+            $data['session'] = $encrypted;
+            $data['last_auth_success_at'] = time();
+            unset($data['login_armed_until'], $data['test_login'], $data['test_challenge'], $data['challenge_at'], $data['otp'], $data['otp_at'], $data['otp_consumed_at']);
+            self::save($data);
+        }
+        update_option(self::waiting_option($scope), 'imported', false);
         $response = new WP_REST_Response(['ok' => true]);
         $response->header('Cache-Control', 'no-store');
         return $response;
     }
 
-    private static function valid_codespace_session($state): bool {
-        $hosts = ['snapppay.ir', 'app.snapppay.ir', 'sso.snapppay.ir'];
+    private static function valid_codespace_session($state, string $scope): bool {
+        $site = $scope === 'ads' ? 'ads.snapppay.ir' : 'app.snapppay.ir';
+        $hosts = ['snapppay.ir', $site, 'sso.snapppay.ir'];
         if (!is_array($state) || !is_array($state['cookies'] ?? null) || !$state['cookies'] || !is_array($state['origins'] ?? null)) {
             return false;
         }
@@ -235,20 +245,37 @@ final class Sarmo_SnappPay_Auth {
         return true;
     }
 
-    public static function codespace_status(string $state): bool {
-        $waiting = (string) get_option(self::CODESPACE_WAITING, '');
+    private static function waiting_option(string $scope): string {
+        return $scope === 'ads' ? self::CODESPACE_WAITING . '_ads' : self::CODESPACE_WAITING;
+    }
+
+    public static function ads_session(): WP_REST_Response {
+        $response = new WP_REST_Response([
+            'configured' => self::codespace_name() !== '',
+            'session' => self::decrypt((string) get_option(self::ADS_SESSION, '')),
+        ]);
+        $response->header('Cache-Control', 'no-store, private');
+        return $response;
+    }
+
+    public static function codespace_status(string $state, string $scope = 'market'): bool {
+        $option = self::waiting_option($scope);
+        $waiting = (string) get_option($option, '');
         if ($state === 'required') {
             if ($waiting === 'notified') { return true; }
             $panel = admin_url('tools.php?page=sarmo-snappay-monitor');
             $startup = 'https://github.com/codespaces/' . self::codespace_name();
-            $text = "اسنپ‌پی دوباره ورود می‌خواهد. Codespace را از این لینک باز کن:\n$startup\nسپس در پنل پایش روی «باز کردن مرورگر ورود» بزن و کد را در خود اسنپ‌پی وارد کن:\n$panel";
+            $title = $scope === 'ads' ? 'پنل تبلیغات اسنپ‌پی' : 'بازار اسنپ‌پی';
+            $text = "$title دوباره ورود می‌خواهد. Codespace را از این لینک باز کن:\n$startup\nسپس در پنل پایش روی دکمهٔ ورودِ همان سرویس بزن و کد را در خود اسنپ‌پی وارد کن:\n$panel";
         } elseif ($state === 'scanned' && $waiting === 'imported') {
-            $text = '✅ اولین اسکن معتبر با نشست جدید ثبت شد. برای دیدن رتبه‌ها /report را بفرست.';
+            $text = $scope === 'ads'
+                ? '✅ اولین گزارش معتبر پنل Ads ثبت شد. برای دیدن کمپین‌های فعال /ads را بفرست.'
+                : '✅ اولین اسکن معتبر با نشست جدید ثبت شد. برای دیدن رتبه‌ها /report را بفرست.';
         } else {
             return true;
         }
         if (!Sarmo_SnappPay_Runtime::notify_owner($text)) { return false; }
-        update_option(self::CODESPACE_WAITING, $state === 'required' ? 'notified' : '', false);
+        update_option($option, $state === 'required' ? 'notified' : '', false);
         return true;
     }
 

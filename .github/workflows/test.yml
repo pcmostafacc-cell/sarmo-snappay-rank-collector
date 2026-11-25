@@ -6,7 +6,7 @@ on:
       - '*.mjs'
       - 'package.json'
       - 'wordpress-plugin/**/*.php'
-      - 'tests/**/*.php'
+      - 'tests/**'
       - 'codespaces-login/**'
       - '.devcontainer/**'
       - '.github/workflows/test.yml'
@@ -15,7 +15,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
@@ -36,3 +36,7 @@ jobs:
       - run: for file in codespaces-login/*.sh; do bash -n "$file" || exit; done
       - run: node --check codespaces-login/server.mjs && node --check codespaces-login/portal.js
       - run: for file in *.mjs; do node --check "$file"; done
+
+      - run: npm install --no-audit --no-fund
+      - run: npx playwright install chromium --with-deps
+      - run: node tests/check-ads-browser.mjs

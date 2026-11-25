@@ -33,7 +33,13 @@ function postToWordPress(payload) {
   });
 }
 
-async function receiveLogin(grant) {
+async function receiveLogin(grant, scope) {
+  const ads = scope === 'ads';
+  const target = ads ? 'https://ads.snapppay.ir/' : search;
+  const host = new URL(target).hostname;
+  const ready = tab => ads
+    ? tab.getByRole('heading', { name: 'کمپین‌های ساخته‌شده', exact: true })
+    : tab.locator('[data-testid="search-typing-input"]');
   let browser;
   try {
     browser = await chromium.launch({
@@ -46,16 +52,16 @@ async function receiveLogin(grant) {
     page.on('framenavigated', frame => {
       if (frame === page.mainFrame() && new URL(frame.url()).hostname === 'sso.snapppay.ir') sawLogin = true;
     });
-    await page.goto(search, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
     const deadline = Date.now() + 10 * 60_000;
     while (Date.now() < deadline && !page.isClosed()) {
-      if (sawLogin && new URL(page.url()).hostname === 'app.snapppay.ir') {
+      if ((ads || sawLogin) && new URL(page.url()).hostname === host && await ready(page).isVisible()) {
         const probe = await ctx.newPage();
         try {
-          await probe.goto(search, { waitUntil: 'domcontentloaded', timeout: 15000 });
-          await probe.locator('[data-testid="search-typing-input"]').waitFor({ timeout: 12000 });
-          if (new URL(probe.url()).hostname === 'app.snapppay.ir') {
-            const session = scopedSession(await ctx.storageState({ indexedDB: true }));
+          await probe.goto(target, { waitUntil: 'domcontentloaded', timeout: 15000 });
+          await ready(probe).waitFor({ timeout: 12000 });
+          if (new URL(probe.url()).hostname === host) {
+            const session = scopedSession(await ctx.storageState({ indexedDB: true }), scope);
             if (session.cookies.length === 0) throw new Error('No session cookies');
             const response = await postToWordPress({ grant, session });
             state = response.ok ? 'saved' : 'handoff-failed';
@@ -111,13 +117,15 @@ const server = createServer(async (req, res) => {
     if (state === 'working') return reply(409, { ok: false });
     const check = await postToWordPress({ grant, check: true });
     if (!check.ok) return reply(403, { ok: false });
+    const { scope } = await check.json();
+    if (scope !== 'ads' && scope !== 'market') return reply(403, { ok: false });
     if (state === 'working') return reply(409, { ok: false });
     browserCookie = randomBytes(32).toString('hex');
     state = 'working';
     reply(202, { ok: true }, {
       'Set-Cookie': 'sarmo_login=' + browserCookie + '; Max-Age=720; Path=/; Secure; HttpOnly; SameSite=Strict',
     });
-    void receiveLogin(grant);
+    void receiveLogin(grant, scope);
   } catch {
     reply(400, { ok: false });
   }

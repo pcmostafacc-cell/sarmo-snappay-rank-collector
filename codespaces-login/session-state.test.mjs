@@ -13,3 +13,10 @@ test('only SnappPay HTTPS origins and exact-domain cookies can be relayed', () =
     origins: [origin, { origin: 'http://sso.snapppay.ir' }, { origin: 'https://github.com' }],
   }), { cookies: [valid], origins: [origin] });
 });
+
+test('Ads and market sessions retain different application hosts', () => {
+  const cookies = [{ domain: 'ads.snapppay.ir' }, { domain: 'app.snapppay.ir' }];
+  const state = { cookies, origins: [] };
+  assert.deepEqual(scopedSession(state, 'ads').cookies, [cookies[0]]);
+  assert.deepEqual(scopedSession(state, 'market').cookies, [cookies[1]]);
+});

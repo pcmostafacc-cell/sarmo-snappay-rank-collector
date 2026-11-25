@@ -3,6 +3,7 @@ if (!defined('ABSPATH')) { exit; }
 
 final class Sarmo_SnappPay_Ads {
     private const SNAPSHOT = 'sarmo_monitor_ads_snapshot';
+    private const LINKS = 'sarmo_monitor_ads_keyword_links';
     private const PAGE_SIZE = 6;
     private const MAX_AGE = 1800;
     private const NUMBERS = [
@@ -12,6 +13,45 @@ final class Sarmo_SnappPay_Ads {
 
     public static function init(): void {
         add_action('admin_post_sarmo_monitor_ads_import', [self::class, 'import']);
+        add_action('rest_api_init', [self::class, 'routes']);
+    }
+
+    public static function routes(): void {
+        $permission = static fn() => current_user_can('manage_sarmo_ads_read');
+        register_rest_route('sarmo-monitor/v1', '/ads-session', [
+            'methods' => 'GET', 'callback' => [Sarmo_SnappPay_Auth::class, 'ads_session'],
+            'permission_callback' => $permission,
+        ]);
+        register_rest_route('sarmo-monitor/v1', '/ads-snapshot', [
+            'methods' => 'POST', 'callback' => [self::class, 'ingest'],
+            'permission_callback' => $permission,
+        ]);
+        register_rest_route('sarmo-monitor/v1', '/ads-login-required', [
+            'methods' => 'POST', 'callback' => static function () {
+                if (!Sarmo_SnappPay_Auth::codespace_name()) {
+                    return new WP_Error('codespace_missing', 'Codespace is not configured', ['status' => 409]);
+                }
+                if (!Sarmo_SnappPay_Auth::codespace_status('required', 'ads')) {
+                    return new WP_Error('bale_delivery_failed', 'Login notice could not be sent', ['status' => 502]);
+                }
+                return rest_ensure_response(['ok' => true]);
+            }, 'permission_callback' => $permission,
+        ]);
+    }
+
+    public static function ingest(WP_REST_Request $request) {
+        if (strlen($request->get_body()) > 180000) {
+            return new WP_Error('too_large', 'Ads report exceeds the limit', ['status' => 413]);
+        }
+        $input = $request->get_json_params();
+        $snapshot = is_array($input) ? self::snapshot($input, (array) get_option('sarmo_snappay_keywords', [])) : null;
+        if (!$snapshot) { return new WP_Error('bad_ads_snapshot', 'Invalid or partial Ads report', ['status' => 400]); }
+        if ($snapshot['observed_at'] < (int) (self::data()['observed_at'] ?? 0)) {
+            return new WP_Error('old_ads_snapshot', 'A newer Ads report is already stored', ['status' => 409]);
+        }
+        update_option(self::SNAPSHOT, $snapshot, false);
+        Sarmo_SnappPay_Auth::codespace_status('scanned', 'ads');
+        return rest_ensure_response(['ok' => true, 'count' => count($snapshot['campaigns'])]);
     }
 
     private static function data(): array {
@@ -128,6 +168,19 @@ final class Sarmo_SnappPay_Ads {
         return count($matches) === 1 ? $matches[0] : null;
     }
 
+    public static function link_keyword(string $argument, array $keywords): string {
+        $parts = explode('|', $argument);
+        if (count($parts) !== 2) { return 'قالب: /ad_link نام یا شناسهٔ کمپین | کلیدواژه'; }
+        $campaign = self::find($parts[0]);
+        $keyword = self::normalize($parts[1]);
+        if (!$campaign) { return 'کمپین یکتا در آخرین برداشت Ads پیدا نشد.'; }
+        if (!array_key_exists($keyword, $keywords)) { return 'اول کلیدواژه را با /add به پایش اضافه کن.'; }
+        $links = (array) get_option(self::LINKS, []);
+        $links[$campaign['id']] = $keyword;
+        update_option(self::LINKS, $links, false);
+        return 'کمپین «' . $campaign['name'] . '» به جست‌وجوی «' . $keyword . '» وصل شد.';
+    }
+
     public static function detail(string $reference, callable $rank): string {
         $row = self::find($reference);
         if (!$row) { return self::source_status() . "\nکمپین یکتا پیدا نشد. /ads یا /ad شناسهٔ کمپین"; }
@@ -140,7 +193,10 @@ final class Sarmo_SnappPay_Ads {
         $lines[] = 'عملکرد (' . ($row['period'] ?: 'بازه نامشخص') . '): ' .
             ($row['clicks'] ?? 'نامشخص') . ' کلیک | ' . ($row['views'] ?? 'نامشخص') . ' بازدید | CTR ' . $ctr;
         $lines[] = 'میانگین هزینهٔ پرداخت‌شده در این بازه: ' . self::money($row['actual_cpc_toman']);
-        $lines[] = $row['keyword'] === '' ? 'کلیدواژهٔ مرتبط هنوز ثبت نشده است.' : $rank($row['keyword']);
+        $links = (array) get_option(self::LINKS, []);
+        $rules = (array) get_option('sarmo_snappay_keywords', []);
+        $keyword = (string) ($links[$row['id']] ?? $row['keyword']);
+        $lines[] = isset($rules[$keyword]) ? $rank($keyword) : 'کلیدواژهٔ مرتبط هنوز ثبت نشده است.';
         $lines[] = 'https://ads.snapppay.ir/campaign/' . $row['id'];
         return implode("\n", $lines);
     }
