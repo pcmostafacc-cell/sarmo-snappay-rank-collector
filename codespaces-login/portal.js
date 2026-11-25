@@ -3,7 +3,7 @@ const desktop = document.querySelector('#desktop');
 const messages = {
   idle: 'از لینک تازهٔ پنل وردپرس وارد شو.',
   working: 'در پنجرهٔ زیر ورود به حساب اسنپ‌پی را کامل کن. اطلاعات ورود را همان‌جا وارد کن.',
-  saved: 'نشست به وردپرس رسید. نتیجهٔ خواندن محصولات در اجرای بعدی بررسی می‌شود.',
+  saved: 'نشست به وردپرس رسید. نتیجهٔ خواندن داده در اجرای بعدی در بله اعلام می‌شود.',
   'handoff-failed': 'وردپرس نشست را نپذیرفت. برای تلاش تازه از پنل وردپرس شروع کن.',
   expired: 'زمان این تلاش تمام شد. برای تلاش تازه از پنل وردپرس شروع کن.',
   failed: 'مرورگر نتوانست ورود را کامل کند. وضعیت اسنپ‌پی و Codespace را بررسی کن.',
@@ -11,12 +11,14 @@ const messages = {
 async function refresh() {
   try {
     const response = await fetch('/status', { cache: 'no-store' });
-    const { state } = await response.json();
-    statusLine.textContent = messages[state] || messages.failed;
-    if (state === 'working' && !desktop.hasAttribute('src')) {
+    const { state, viewer } = await response.json();
+    statusLine.textContent = state === 'working' && !viewer
+      ? 'ورود را در پنجرهٔ Chrome که باز شد کامل کن.' : messages[state] || messages.failed;
+    const showDesktop = state === 'working' && viewer;
+    if (showDesktop && !desktop.hasAttribute('src')) {
       desktop.src = '/vnc/vnc.html?autoconnect=1&reconnect=1&resize=scale&path=vnc%2Fwebsockify';
     }
-    desktop.hidden = state !== 'working';
+    desktop.hidden = !showDesktop;
     if (desktop.hidden) desktop.removeAttribute('src');
   } catch {
     statusLine.textContent = 'اتصال به محیط ورود قطع شد.';

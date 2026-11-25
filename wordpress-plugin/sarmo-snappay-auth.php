@@ -69,7 +69,7 @@ final class Sarmo_SnappPay_Auth {
     }
 
     public static function set_phone(string $phone, bool $test = false): bool {
-        if (self::codespace_name() !== '') { return false; }
+        if (self::manual_browser_ready()) { return false; }
         $phone = preg_replace('/\D/', '', self::digits($phone));
         if (!preg_match('/^09[0-9]{9}$/', $phone)) { return false; }
         $data = self::data();
@@ -102,7 +102,7 @@ final class Sarmo_SnappPay_Auth {
     }
 
     public static function status(): string {
-        if (self::codespace_name() !== '') {
+        if (self::manual_browser_ready()) {
             return 'ورود دستی Codespaces فعال است. اگر اسنپ‌پی ورود بخواهد، از پیوند پنل پایش استفاده کن.';
         }
         $data = self::data();
@@ -139,6 +139,10 @@ final class Sarmo_SnappPay_Auth {
         return (string) get_option(self::CODESPACE, '');
     }
 
+    public static function manual_browser_ready(): bool {
+        return self::codespace_name() !== '' || (bool) get_option('sarmo_monitor_local_manual_browser', false);
+    }
+
     private static function codespace_origin(): string {
         return 'https://' . self::codespace_name() . '-6080.app.github.dev';
     }
@@ -162,14 +166,15 @@ final class Sarmo_SnappPay_Auth {
             wp_safe_redirect($panel);
             exit;
         }
-        if (self::codespace_name() === '') {
+        $local = ($_POST['login_transport'] ?? '') === 'local';
+        if (!$local && self::codespace_name() === '') {
             wp_safe_redirect($panel);
             exit;
         }
         $scope = ($_POST['login_scope'] ?? '') === 'ads' ? 'ads' : 'market';
         $grant = bin2hex(random_bytes(32));
         $hash = hash('sha256', $grant);
-        if (!add_option(self::CODESPACE_GRANT_PREFIX . $hash, ['expires' => time() + 720, 'scope' => $scope], '', false)) {
+        if (!add_option(self::CODESPACE_GRANT_PREFIX . $hash, ['expires' => time() + 720, 'scope' => $scope, 'local' => $local], '', false)) {
             wp_die('Could not create a login authorization', '', ['response' => 500]);
         }
         update_option(self::CODESPACE_GRANT, $hash, false);
@@ -177,21 +182,23 @@ final class Sarmo_SnappPay_Auth {
         header('Referrer-Policy: no-referrer');
         // The destination is derived from the validated Codespace name. The grant
         // is in the fragment so it does not appear in GitHub HTTP request logs.
-        wp_redirect(self::codespace_origin() . '/#grant=' . $grant, 303);
+        $origin = $local ? 'http://127.0.0.1:6081' : self::codespace_origin();
+        wp_redirect($origin . '/#grant=' . $grant, 303);
         exit;
     }
 
     public static function receive_codespace_session(WP_REST_Request $request) {
         $grant = $request->get_param('grant');
-        if (self::codespace_name() === '' || !is_string($grant) || !preg_match('/^[a-f0-9]{64}$/D', $grant)) {
+        if (!is_string($grant) || !preg_match('/^[a-f0-9]{64}$/D', $grant)) {
             return new WP_Error('bad_grant', 'Invalid login authorization', ['status' => 403]);
         }
         $hash = hash('sha256', $grant);
         $option = self::CODESPACE_GRANT_PREFIX . $hash;
         $grantData = get_option($option, 0);
+        $local = is_array($grantData) && ($grantData['local'] ?? false) === true;
         $scope = is_array($grantData) && ($grantData['scope'] ?? '') === 'ads' ? 'ads' : 'market';
         $expires = is_array($grantData) ? (int) ($grantData['expires'] ?? 0) : (int) $grantData;
-        if (!hash_equals((string) get_option(self::CODESPACE_GRANT, ''), $hash) || $expires <= time()) {
+        if ((!$local && self::codespace_name() === '') || !hash_equals((string) get_option(self::CODESPACE_GRANT, ''), $hash) || $expires <= time()) {
             return new WP_Error('bad_grant', 'Invalid or expired login authorization', ['status' => 403]);
         }
         if (strlen($request->get_body()) > 151000) {
@@ -213,6 +220,7 @@ final class Sarmo_SnappPay_Auth {
         if (!delete_option($option)) {
             return new WP_Error('bad_grant', 'Login authorization was already used', ['status' => 403]);
         }
+        if ($local) { update_option('sarmo_monitor_local_manual_browser', true, false); }
         if ($scope === 'ads') {
             update_option(self::ADS_SESSION, $encrypted, false);
         } else {
@@ -251,11 +259,17 @@ final class Sarmo_SnappPay_Auth {
 
     public static function ads_session(): WP_REST_Response {
         $response = new WP_REST_Response([
-            'configured' => self::codespace_name() !== '',
+            'configured' => self::manual_browser_ready(),
             'session' => self::decrypt((string) get_option(self::ADS_SESSION, '')),
         ]);
         $response->header('Cache-Control', 'no-store, private');
         return $response;
+    }
+
+    public static function login_message(string $scope): string {
+        $title = $scope === 'ads' ? 'پنل تبلیغات اسنپ‌پی' : 'بازار اسنپ‌پی';
+        $panel = add_query_arg('login_source', $scope, admin_url('tools.php?page=sarmo-snappay-monitor'));
+        return "ورود خصوصی به $title\n$panel";
     }
 
     public static function codespace_status(string $state, string $scope = 'market'): bool {
@@ -263,10 +277,7 @@ final class Sarmo_SnappPay_Auth {
         $waiting = (string) get_option($option, '');
         if ($state === 'required') {
             if ($waiting === 'notified') { return true; }
-            $panel = admin_url('tools.php?page=sarmo-snappay-monitor');
-            $startup = 'https://github.com/codespaces/' . self::codespace_name();
-            $title = $scope === 'ads' ? 'پنل تبلیغات اسنپ‌پی' : 'بازار اسنپ‌پی';
-            $text = "$title دوباره ورود می‌خواهد. Codespace را از این لینک باز کن:\n$startup\nسپس در پنل پایش روی دکمهٔ ورودِ همان سرویس بزن و کد را در خود اسنپ‌پی وارد کن:\n$panel";
+            $text = 'نشست به ورود دوباره نیاز دارد.' . "\n" . self::login_message($scope);
         } elseif ($state === 'scanned' && $waiting === 'imported') {
             $text = $scope === 'ads'
                 ? '✅ اولین گزارش معتبر پنل Ads ثبت شد. برای دیدن کمپین‌های فعال /ads را بفرست.'
@@ -289,7 +300,7 @@ final class Sarmo_SnappPay_Auth {
             'methods' => 'POST',
             'callback' => static function (WP_REST_Request $request) {
                 $state = $request->get_param('state');
-                if (self::codespace_name() === '' || !in_array($state, ['required', 'scanned'], true)) {
+                if (!self::manual_browser_ready() || !in_array($state, ['required', 'scanned'], true)) {
                     return new WP_Error('bad_state', 'Invalid login state', ['status' => 400]);
                 }
                 if (!self::codespace_status($state)) {
@@ -342,7 +353,7 @@ final class Sarmo_SnappPay_Auth {
         $rate_limited = $rate_limited_until > time() && !self::test_armed($data);
         $armed = !$rate_limited && !empty($data['login_armed_until']) && (int) $data['login_armed_until'] >= time();
         $response = new WP_REST_Response([
-            'manual_browser_login' => self::codespace_name() !== '',
+            'manual_browser_login' => self::manual_browser_ready(),
             'phone' => $armed ? (string) ($data['phone'] ?? '') : '',
             'login_armed' => $armed,
             'session' => self::decrypt((string) ($data['session'] ?? '')),
@@ -353,7 +364,7 @@ final class Sarmo_SnappPay_Auth {
     }
 
     private static function claim_login(): WP_REST_Response|WP_Error {
-        if (self::codespace_name() !== '') {
+        if (self::manual_browser_ready()) {
             return new WP_Error('manual_login_only', 'Use the private login browser', ['status' => 403]);
         }
         $lock_at = (int) get_option(self::CLAIM_LOCK, 0);

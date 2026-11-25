@@ -119,7 +119,7 @@ try {
 }
 if (manualLoginRequired) {
   await reportLogin('required');
-  console.log('Codespace login required; this run could not complete collection.');
+  console.log('Manual login required; this run could not complete collection.');
   process.exitCode = 2;
 } else if (manualLogin && validCount > 0) {
   await reportLogin('scanned');

@@ -33,7 +33,13 @@ foreach (['4,980,000 تومان', '49,520,000 تومان', '9,500 تومان', '
 if (!str_contains(Sarmo_SnappPay_Ads::bid_preview('نمونه 9000'), '9,000 تومان')) {
     throw new RuntimeException('Active fresh campaign did not produce a preview.');
 }
+if (Sarmo_SnappPay_Ads::bid_target($id)['bid_toman'] !== 10000) {
+    throw new RuntimeException('Active fresh campaign must resolve to its real bid.');
+}
 $GLOBALS['options']['sarmo_monitor_ads_snapshot']['observed_at'] -= 3600;
+if (Sarmo_SnappPay_Ads::bid_target($id) !== null) {
+    throw new RuntimeException('A stale observation must not open a write request.');
+}
 if (!str_contains(Sarmo_SnappPay_Ads::bid_preview('نمونه 9000'), 'گزارش تازه')) {
     throw new RuntimeException('Stale campaign data must block bid previews.');
 }

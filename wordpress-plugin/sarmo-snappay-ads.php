@@ -28,7 +28,7 @@ final class Sarmo_SnappPay_Ads {
         ]);
         register_rest_route('sarmo-monitor/v1', '/ads-login-required', [
             'methods' => 'POST', 'callback' => static function () {
-                if (!Sarmo_SnappPay_Auth::codespace_name()) {
+                if (!Sarmo_SnappPay_Auth::manual_browser_ready()) {
                     return new WP_Error('codespace_missing', 'Codespace is not configured', ['status' => 409]);
                 }
                 if (!Sarmo_SnappPay_Auth::codespace_status('required', 'ads')) {
@@ -199,6 +199,15 @@ final class Sarmo_SnappPay_Ads {
         $lines[] = isset($rules[$keyword]) ? $rank($keyword) : 'کلیدواژهٔ مرتبط هنوز ثبت نشده است.';
         $lines[] = 'https://ads.snapppay.ir/campaign/' . $row['id'];
         return implode("\n", $lines);
+    }
+
+    public static function bid_target(string $reference): ?array {
+        $row = self::find($reference);
+        if (!$row || !$row['active'] || $row['bid_toman'] === null ||
+            time() - (int) (self::data()['observed_at'] ?? 0) > self::MAX_AGE) {
+            return null;
+        }
+        return $row;
     }
 
     public static function bid_preview(string $argument): string {

@@ -1,0 +1,31 @@
+name: Sarmo Ads approved bid changes
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '9,19,29,39,49,59 * * * *'
+permissions:
+  contents: read
+concurrency:
+  group: sarmo-snappay-ads-bid
+  cancel-in-progress: false
+jobs:
+  apply_approved:
+    if: ${{ vars.SARMO_ADS_BID_EXECUTOR_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      SARMO_WP_URL: ${{ secrets.SARMO_WP_URL }}
+      SARMO_ADS_BID_WP_USER: ${{ secrets.SARMO_ADS_BID_WP_USER }}
+      SARMO_ADS_BID_WP_APP_PASSWORD: ${{ secrets.SARMO_ADS_BID_WP_APP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - id: preflight
+        run: node run-ads-bid.mjs --preflight
+      - if: steps.preflight.outputs.run == 'true'
+        run: npx playwright install chromium --with-deps
+      - if: steps.preflight.outputs.run == 'true'
+        run: node run-ads-bid.mjs

@@ -43,6 +43,7 @@ async function visibleGrid(table) {
 }
 
 export class AdsLoginRequired extends Error {}
+const campaignId = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 
 async function assertReachable(page, response) {
   const url = new URL(page.url());
@@ -55,6 +56,7 @@ async function assertReachable(page, response) {
 }
 
 async function details(context, row) {
+  if (!campaignId.test(row.id)) throw new Error('Invalid campaign ID');
   const page = await context.newPage();
   try {
     const res = await page.goto(new URL('/campaign/' + row.id, root).href, { waitUntil: 'domcontentloaded', timeout: 20000 });
@@ -80,8 +82,7 @@ async function details(context, row) {
   } finally { await page.close().catch(() => {}); }
 }
 
-export async function collectAdsSnapshot(context) {
-  const page = await context.newPage();
+async function activeCampaigns(page, target) {
   const response = await page.goto(root.href, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await assertReachable(page, response);
   const table = page.locator('table').filter({ has: page.getByRole('columnheader', { name: headings.name, exact: true }) });
@@ -108,23 +109,87 @@ export async function collectAdsSnapshot(context) {
     const empty = await table.locator('tbody .ant-empty-description').isVisible();
     if (empty && index === 0) break;
     for (const row of data.rows) {
-      if (!/^\/campaign\/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(row.campaign) ||
+      if (!row.campaign.startsWith('/campaign/') || !campaignId.test(row.campaign.slice(10)) ||
           !row.name || row.cells[ix.status] !== 'فعال' || campaigns.has(row.campaign)) {
         throw new Error('Ads active campaign page incomplete or duplicated');
       }
       campaigns.set(row.campaign, { id: row.campaign.slice('/campaign/'.length), name: row.name });
     }
+    if (campaigns.has(target)) break;
     if (!await next.count() || !await next.isEnabled()) break;
     if (index === 24) throw new Error('Ads pagination exceeded the limit');
     await next.click();
   }
-  // Capture the account balance when the panel actually exposes it.
-  const balanceText = (await page.getByText(/^موجودی\s*:/).first().textContent({ timeout: 2000 }).catch(() => '')) || '';
-  const balance = amount(balanceText.replace(/^موجودی\s*:\s*/u, ''));
-  const all = [];
-  for (const row of campaigns.values()) all.push(await details(context, row));
-  return {
-    observed_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
-    complete: true, balance_toman: balance, campaigns: all,
-  };
+  return { table, campaigns };
+}
+
+export async function collectAdsSnapshot(context) {
+  const page = await context.newPage();
+  try {
+    const { campaigns } = await activeCampaigns(page);
+    const balanceText = (await page.getByText(/^موجودی\s*:/).first().textContent({ timeout: 2000 }).catch(() => '')) || '';
+    const all = [];
+    for (const row of campaigns.values()) all.push(await details(context, row));
+    return {
+      observed_at: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+      complete: true, balance_toman: amount(balanceText.replace(/^موجودی\s*:\s*/u, '')), campaigns: all,
+    };
+  } finally { await page.close().catch(() => {}); }
+}
+
+function hasRoom(spend, limit) {
+  return Number.isSafeInteger(spend) && Number.isSafeInteger(limit) && spend >= 0 && limit > spend;
+}
+
+export async function applyApprovedBid(context, job, claim) {
+  const target = { id: job.campaign_id };
+  const oldBid = amount(job.old_bid);
+  const newBid = amount(job.new_bid);
+  const blocked = reason => ({ state: 'blocked', reason });
+  if (oldBid === null || !newBid || newBid > 1_000_000_000 || oldBid === newBid || !campaignId.test(target.id)) {
+    return blocked('guard');
+  }
+  const overview = await context.newPage();
+  let submitted = false;
+  try {
+    const detail = await details(context, target);
+    if (!detail.active) return blocked('inactive');
+    if (detail.bid_toman !== oldBid) return blocked('stale_bid');
+    // Pausing, a spent budget or ambiguous amounts must stop the write.
+    if (!hasRoom(detail.daily_spend_toman, detail.daily_limit_toman) ||
+        !hasRoom(detail.total_spend_toman, detail.total_limit_toman)) return blocked('guard');
+
+    const path = '/campaign/' + target.id;
+    const { table, campaigns } = await activeCampaigns(overview, path);
+    if (!campaigns.has(path)) return blocked('inactive');
+    const grid = await visibleGrid(table);
+    const columns = requireColumns(grid.headers, ['status', 'bid']);
+    const row = table.getByRole('row').filter({ has: overview.locator(`a[href="${path}"]`) });
+    if (await row.count() !== 1) return blocked('editor');
+    const cells = row.getByRole('cell');
+    if ((await cells.nth(columns.status).innerText({ timeout: 1500 })).trim() !== 'فعال') return blocked('inactive');
+    const offer = cells.nth(columns.bid);
+    if (amount(await offer.innerText({ timeout: 1500 })) !== oldBid) return blocked('stale_bid');
+    await offer.getByRole('button').click({ timeout: 3500 });
+    const input = overview.getByRole('textbox', { name: 'مقدار دلخواه خود را وارد کنید', exact: true });
+    const apply = overview.getByRole('button', { name: 'اعمال تغییرات', exact: true });
+    if (amount(await input.inputValue({ timeout: 3500 })) !== oldBid) return blocked('stale_bid');
+    await input.fill(String(newBid), { timeout: 3500 });
+    if (amount(await input.inputValue({ timeout: 1500 })) !== newBid) return blocked('editor');
+    await apply.click({ trial: true, timeout: 3500 });
+    const expires = await claim();
+    if (!expires || expires * 1000 <= Date.now()) return blocked('guard');
+
+    submitted = true;
+    await apply.click({ timeout: Math.min(3500, expires * 1000 - Date.now()) });
+    for (const wait of [0, 1000]) {
+      if (wait) await new Promise(resolve => setTimeout(resolve, wait));
+      const observed = await details(context, target).catch(() => null);
+      if (observed?.bid_toman === newBid) return { state: 'applied', actual_bid: newBid };
+    }
+    return { state: 'uncertain', reason: 'readback' };
+  } catch (error) {
+    if (!submitted && error instanceof AdsLoginRequired) throw error;
+    return submitted ? { state: 'uncertain', reason: 'readback' } : blocked('editor');
+  } finally { await overview.close().catch(() => {}); }
 }

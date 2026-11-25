@@ -9,7 +9,7 @@ final class Sarmo_SnappPay_Runtime {
     private const WEBHOOK_UPDATE = 'sarmo_monitor_bale_last_update_id';
     private const HOOK = 'sarmo_monitor_tick';
     private const KEYWORDS = 'sarmo_snappay_keywords';
-    private const SCHEMA_VERSION = '0.11.0';
+    private const SCHEMA_VERSION = '0.12.0';
     private const MAX_KEYWORDS = 10;
 
     public static function init(): void {
@@ -70,6 +70,7 @@ final class Sarmo_SnappPay_Runtime {
         if ($admin && !$admin->has_cap('manage_sarmo_monitor')) {
             $admin->add_cap('manage_sarmo_monitor');
         }
+        Sarmo_SnappPay_Bids::activate();
         update_option('sarmo_monitor_schema_version', self::SCHEMA_VERSION, false);
     }
 
@@ -413,7 +414,7 @@ final class Sarmo_SnappPay_Runtime {
         $reply = '';
         switch ($command) {
             case '/start': case '/help': case '/panel':
-                $reply = "/list\n/add کلیدواژه\n/remove کلیدواژه\n/report [کلیدواژه]\n/rank بازه کلیدواژه\n/ads [صفحه]\n/ad نام کمپین\n/ad_link کمپین | کلیدواژه\n/cadence [10|30|60|180] [rank|both]\n/bid_preview کمپین تومان\n/competitors کلیدواژه\n/campaign کلیدواژه جایگاه\n/campaign_off کلیدواژه\n/campaign_report [کلیدواژه]\n/catalog\n/recommend [کلیدواژه]\n/login شمارهٔ موبایل اسنپ‌پی\n/otp کد پیامک (فقط پس از درخواست ربات)\n/login_status\n/login_links\n/status";
+                $reply = "/list\n/add کلیدواژه\n/remove کلیدواژه\n/report [کلیدواژه]\n/rank بازه کلیدواژه\n/ads [صفحه]\n/ad نام کمپین\n/ad_link کمپین | کلیدواژه\n/cadence [10|30|60|180] [rank|both]\n/bid_preview کمپین تومان\n/bid_cap [تومان]\n/bid کمپین تومان\n/bid_confirm شناسه\n/bid_status شناسه\n/competitors کلیدواژه\n/campaign کلیدواژه جایگاه\n/campaign_off کلیدواژه\n/campaign_report [کلیدواژه]\n/catalog\n/recommend [کلیدواژه]\n/login شمارهٔ موبایل اسنپ‌پی\n/otp کد پیامک (فقط پس از درخواست ربات)\n/login_status\n/login_market\n/login_ads\n/login_links\n/status";
                 break;
             case '/list':
                 $lines = ['واژه‌های پایش:'];
@@ -494,6 +495,18 @@ final class Sarmo_SnappPay_Runtime {
             case '/ad_link':
                 $reply = Sarmo_SnappPay_Ads::link_keyword($remainder, $rules);
                 break;
+            case '/bid_cap':
+                $reply = Sarmo_SnappPay_Bids::cap($remainder);
+                break;
+            case '/bid':
+                $reply = Sarmo_SnappPay_Bids::draft($remainder);
+                break;
+            case '/bid_confirm':
+                $reply = Sarmo_SnappPay_Bids::confirm($remainder);
+                break;
+            case '/bid_status':
+                $reply = Sarmo_SnappPay_Bids::status($remainder);
+                break;
             case '/bid_preview':
                 $reply = Sarmo_SnappPay_Ads::bid_preview($remainder);
                 break;
@@ -516,12 +529,14 @@ final class Sarmo_SnappPay_Runtime {
                     'کد دریافت شد و برای ورود استفاده می‌شود.' :
                     "کد ثبت نشد یا درخواست ورود فعال نیست.\n" . Sarmo_SnappPay_Auth::status();
                 break;
+            case '/login_market':
+                $reply = Sarmo_SnappPay_Auth::login_message('market');
+                break;
+            case '/login_ads':
+                $reply = Sarmo_SnappPay_Auth::login_message('ads');
+                break;
             case '/login_links':
-                $name = Sarmo_SnappPay_Auth::codespace_name();
-                $reply = $name === '' ? 'مرورگر خصوصی ورود هنوز تنظیم نشده است.' :
-                    "۱. محیط خصوصی را روشن کن:\nhttps://github.com/codespaces/$name\n" .
-                    '۲. در پنل پایش دکمهٔ ورود بازار یا Ads را انتخاب کن:' . "\n" .
-                    admin_url('tools.php?page=sarmo-snappay-monitor');
+                $reply = Sarmo_SnappPay_Auth::login_message('market') . "\n\n" . Sarmo_SnappPay_Auth::login_message('ads');
                 break;
             case '/login_status':
                 $reply = Sarmo_SnappPay_Auth::status();

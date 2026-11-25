@@ -5,9 +5,10 @@ import { readFile } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { scopedSession } from './session-state.mjs';
 
-const origin = process.env.SARMO_LOGIN_ORIGIN;
-if (process.env.CODESPACES !== 'true' || !/^https:\/\/[a-z0-9-]+-6080\.app\.github\.dev$/.test(origin)) {
-  throw new Error('The portal requires a private GitHub Codespaces port.');
+const local = process.argv.includes('--local');
+const origin = local ? 'http://127.0.0.1:6081' : process.env.SARMO_LOGIN_ORIGIN;
+if (!local && (process.env.CODESPACES !== 'true' || !/^https:\/\/[a-z0-9-]+-6080\.app\.github\.dev$/.test(origin))) {
+  throw new Error('Start the portal in a private Codespace or on loopback with --local.');
 }
 const wp = 'https://mehran.sarmostyle.com/wp-json/sarmo-monitor/v1/codespaces-session';
 const search = 'https://app.snapppay.ir/search';
@@ -42,7 +43,7 @@ async function receiveLogin(grant, scope) {
     : tab.locator('[data-testid="search-typing-input"]');
   let browser;
   try {
-    browser = await chromium.launch({
+    browser = await chromium.launch(local ? { headless: false, channel: 'chrome' } : {
       headless: false, args: ['--kiosk', '--window-size=1280,800'],
       env: { DISPLAY: process.env.DISPLAY, XAUTHORITY: process.env.XAUTHORITY, LANG: 'en_US.UTF-8', HOME: process.env.HOME },
     });
@@ -91,6 +92,7 @@ const server = createServer(async (req, res) => {
   const reply = (code, data, extra = {}) => res.writeHead(code, {
     ...headers, ...extra, 'Content-Type': 'application/json',
   }).end(JSON.stringify(data));
+  if (local && req.headers.host !== '127.0.0.1:6081') return reply(403, { ok: false });
   if (req.method === 'GET' && assets.has(req.url)) {
     const [type, body] = assets.get(req.url);
     return res.writeHead(200, { ...headers, 'Content-Type': type }).end(body);
@@ -99,7 +101,7 @@ const server = createServer(async (req, res) => {
     return reply(state === 'working' && isPaired(req) ? 200 : 403, {});
   }
   if (req.method === 'GET' && req.url === '/status') {
-    return reply(200, { state: isPaired(req) ? state : 'idle' });
+    return reply(200, { state: isPaired(req) ? state : 'idle', viewer: !local });
   }
   if (req.method !== 'POST' || req.url !== '/pair') return reply(404, { ok: false });
   if (req.headers.origin !== origin || !/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) {
@@ -123,11 +125,13 @@ const server = createServer(async (req, res) => {
     browserCookie = randomBytes(32).toString('hex');
     state = 'working';
     reply(202, { ok: true }, {
-      'Set-Cookie': 'sarmo_login=' + browserCookie + '; Max-Age=720; Path=/; Secure; HttpOnly; SameSite=Strict',
+      'Set-Cookie': 'sarmo_login=' + browserCookie + '; Max-Age=720; Path=/; HttpOnly; SameSite=Strict' + (local ? '' : '; Secure'),
     });
     void receiveLogin(grant, scope);
   } catch {
     reply(400, { ok: false });
   }
 });
-server.listen(6081, '127.0.0.1');
+server.listen(6081, '127.0.0.1', () => {
+  if (local) console.log('Sarmo login is ready on loopback. Open the link in Bale on this device.');
+});

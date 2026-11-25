@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.0 — 2026-11-25
+
+- Send separate owner-only Bale links for marketplace and Ads sign-in, with a loopback Chrome option for one-time login when Codespaces is unavailable.
+- Queue exact CPC changes for freshly observed active campaigns after the owner sets a cap and confirms each bid.
+- Give the bid worker a separate WordPress role and keep its Action disabled until configured. Recheck campaign status, previous bid and observed budget room before applying, then read the result from the Ads panel.
+
 ## 0.7.0 — 2026-11-25 (prepared; not deployed live)
 
 - Expand `/competitors <keyword>` into a timed comparison of Sarmo products and competitor cards, including visible placement, ad badge, product price, card score, review count, discount, and availability when present.

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Sarmo SnappPay Monitor
  * Description: Keyword targets, verified rank observations, and Bale reports for Sarmo.
- * Version: 0.11.0
+ * Version: 0.12.0
  * Requires PHP: 8.0
  * Text Domain: sarmo-snappay-monitor
  */
@@ -12,6 +12,7 @@ if (!defined('ABSPATH')) {
 }
 
 require_once __DIR__ . '/sarmo-snappay-ads.php';
+require_once __DIR__ . '/sarmo-snappay-bids.php';
 require_once __DIR__ . '/sarmo-snappay-runtime.php';
 require_once __DIR__ . '/sarmo-snappay-auth.php';
 
@@ -29,6 +30,7 @@ final class Sarmo_SnappPay_Monitor {
         add_action('rest_api_init', [self::class, 'routes']);
         Sarmo_SnappPay_Runtime::init();
         Sarmo_SnappPay_Ads::init();
+        add_action('rest_api_init', [Sarmo_SnappPay_Bids::class, 'routes']);
     }
 
     public static function activate(): void {
@@ -101,7 +103,7 @@ final class Sarmo_SnappPay_Monitor {
             'callback' => static function () {
                 return rest_ensure_response([
                     'api_version' => '0.7.0',
-                    'plugin_version' => '0.11.0',
+                    'plugin_version' => '0.12.0',
                     'persistent_login' => true,
                     'max_keywords' => self::MAX_KEYWORDS,
                     'rank_fields' => ['grid_rank', 'ad_rank', 'absolute_ad_slot', 'merchant_rank'],
@@ -188,10 +190,14 @@ final class Sarmo_SnappPay_Monitor {
         if (($_GET['test_login'] ?? '') === 'unavailable') {
             echo '<p>تلاش آزمایشی ثبت نشد. شمارهٔ قبلی یا وضعیت ورود را بررسی کنید.</p>';
         }
-        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
-        echo '<input type="hidden" name="action" value="sarmo_monitor_test_login">';
-        wp_nonce_field('sarmo_monitor_test_login');
-        echo '<p><button class="button">اجازهٔ یک تلاش آزمایشی ورود با شمارهٔ ثبت‌شده</button></p></form>';
+        if (!Sarmo_SnappPay_Auth::manual_browser_ready()) {
+            echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+            echo '<input type="hidden" name="action" value="sarmo_monitor_test_login">';
+            wp_nonce_field('sarmo_monitor_test_login');
+            echo '<p><button class="button">اجازهٔ یک تلاش آزمایشی ورود با شمارهٔ ثبت‌شده</button></p></form>';
+        }
+        $scope = isset($_GET['login_source']) && $_GET['login_source'] === 'ads' ? 'ads' :
+            (isset($_GET['login_source']) && $_GET['login_source'] === 'market' ? 'market' : '');
         $codespace = Sarmo_SnappPay_Auth::codespace_name();
         $admin_post = esc_url(admin_url('admin-post.php'));
         echo '<h2>ورود دستی با GitHub Codespaces</h2>';
@@ -204,9 +210,27 @@ final class Sarmo_SnappPay_Monitor {
             echo '<form method="post" action="' . $admin_post . '">';
             echo '<input type="hidden" name="action" value="sarmo_monitor_codespace">';
             wp_nonce_field('sarmo_monitor_codespace');
-            echo '<p><button class="button button-primary">ورود به بازار اسنپ‌پی</button> ';
-            echo '<button class="button" name="login_scope" value="ads">ورود به پنل Ads</button></p></form>';
+            echo '<p><a href="' . esc_url('https://github.com/codespaces/' . $codespace) . '">روشن‌کردن Codespace در GitHub</a></p>';
+            if ($scope !== 'ads') {
+                echo '<button class="button button-primary" name="login_scope" value="market">ورود به بازار اسنپ‌پی</button> ';
+            }
+            if ($scope !== 'market') {
+                echo '<button class="button button-primary" name="login_scope" value="ads">ورود به پنل Ads</button>';
+            }
+            echo '</form>';
         }
+        echo '<h2>ورود دستی با مرورگر همین دستگاه</h2>';
+        echo '<p>پس از شروع برنامهٔ ورود محلی سارمو، در پنجرهٔ رسمی اسنپ‌پی وارد شوید. پس از انتقال نشست می‌توانید برنامه را ببندید.</p>';
+        echo '<form method="post" action="' . $admin_post . '">';
+        echo '<input type="hidden" name="action" value="sarmo_monitor_codespace"><input type="hidden" name="login_transport" value="local">';
+        wp_nonce_field('sarmo_monitor_codespace');
+        if ($scope !== 'ads') {
+            echo '<button class="button' . ($codespace === '' ? ' button-primary' : '') . '" name="login_scope" value="market">ورود محلی به بازار اسنپ‌پی</button> ';
+        }
+        if ($scope !== 'market') {
+            echo '<button class="button' . ($codespace === '' ? ' button-primary' : '') . '" name="login_scope" value="ads">ورود محلی به پنل Ads</button>';
+        }
+        echo '</form>';
         Sarmo_SnappPay_Ads::admin_panel();
         if (isset($_POST['sarmo_probe'])) {
             check_admin_referer('sarmo_monitor_probe');
@@ -272,7 +296,7 @@ final class Sarmo_SnappPay_Monitor {
         echo '<p><label>کلیدواژه <input name="query" required maxlength="100"></label> <label>حداکثر جایگاه مطلق آگهی <input name="target" type="number" min="1" max="100" value="1"></label> <label><input name="campaign" type="checkbox" value="1"> هشدار کمپین فعال</label></p>';
         echo '<p><button class="button button-primary">ذخیره</button></p></form>';
         echo '<h2>وضعیت اتصال</h2><p>جمع‌آورنده فقط به دسترسی <code>manage_sarmo_monitor</code> نیاز دارد. افزونه نقش محدود «Sarmo Rank Collector» را می‌سازد؛ برای GitHub Actions کاربر جداگانه با همین نقش و Application Password بسازید. حد پایش برای کنترل مصرف ۱۰ کلیدواژه است.</p>';
-        echo '<p>دادهٔ نمونه به‌عنوان رتبهٔ زنده نمایش داده نمی‌شود. تغییر قیمت تبلیغ در این افزونه وجود ندارد.</p></div>';
+        echo '<p>در بله با <code>/bid_preview</code> قیمت پیشنهادی را پیش‌نمایش بگیرید. ثبت سفارش تغییر قیمت به سقف <code>/bid_cap</code> و تأیید جداگانهٔ هر مبلغ نیاز دارد.</p></div>';
     }
 }
 
