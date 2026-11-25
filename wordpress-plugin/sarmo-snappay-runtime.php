@@ -385,7 +385,7 @@ final class Sarmo_SnappPay_Runtime {
         $reply = '';
         switch ($command) {
             case '/start': case '/help': case '/panel':
-                $reply = "/list\n/add کلیدواژه\n/remove کلیدواژه\n/report [کلیدواژه]\n/competitors کلیدواژه\n/campaign کلیدواژه جایگاه\n/campaign_off کلیدواژه\n/campaign_report [کلیدواژه]\n/catalog\n/recommend [کلیدواژه]\n/login شمارهٔ موبایل اسنپ‌پی\n/otp کد پیامک (فقط پس از درخواست ربات)\n/login_status\n/status";
+                $reply = "/list\n/add کلیدواژه\n/remove کلیدواژه\n/report [کلیدواژه]\n/rank بازه کلیدواژه\n/ads [صفحه]\n/ad نام کمپین\n/bid_preview کمپین تومان\n/competitors کلیدواژه\n/campaign کلیدواژه جایگاه\n/campaign_off کلیدواژه\n/campaign_report [کلیدواژه]\n/catalog\n/recommend [کلیدواژه]\n/login شمارهٔ موبایل اسنپ‌پی\n/otp کد پیامک (فقط پس از درخواست ربات)\n/login_status\n/status";
                 break;
             case '/list':
                 $lines = ['واژه‌های پایش:'];
@@ -451,6 +451,18 @@ final class Sarmo_SnappPay_Runtime {
             case '/recommend':
                 $reply = 'منبع کمپین و هزینهٔ Search Ads هنوز وصل نیست؛ پیشنهاد قیمت یا بودجه ساخته نمی‌شود. فعلاً از /report و /campaign_report برای جایگاه استفاده کن.';
                 break;
+            case '/rank':
+                $reply = self::rank_window($remainder);
+                break;
+            case '/ads':
+                $reply = Sarmo_SnappPay_Ads::active_list($remainder);
+                break;
+            case '/ad':
+                $reply = Sarmo_SnappPay_Ads::detail($remainder, static fn(string $keyword): string => self::single_report($keyword));
+                break;
+            case '/bid_preview':
+                $reply = Sarmo_SnappPay_Ads::bid_preview($remainder);
+                break;
             case '/report':
                 $reply = $query === '' ? self::report(false) : self::single_report($query);
                 break;
@@ -477,6 +489,60 @@ final class Sarmo_SnappPay_Runtime {
         if ($reply === '') { $reply = 'فرمان نامعتبر است. /help'; }
         self::send($reply, $chat_id);
         return new WP_REST_Response(['ok' => true]);
+    }
+
+    private static function rank_window(string $argument): string {
+        $windows = ['1h' => 3600, '6h' => 21600, '24h' => 86400, '7d' => 604800, '30d' => 2592000];
+        $parts = preg_split('/\s+/u', trim($argument), 2);
+        $key = strtolower($parts[0] ?? '');
+        $query = self::normalize($parts[1] ?? '');
+        if ((!isset($windows[$key]) && $key !== 'today') || $query === '') {
+            return 'قالب: /rank 6h عبا | بازه‌ها: 1h، 6h، 24h، 7d، 30d، today';
+        }
+        $rules = (array) get_option(self::KEYWORDS, []);
+        if (!isset($rules[$query])) { return "«$query» در لیست پایش نیست."; }
+        $now = time();
+        $tz = new DateTimeZone('Asia/Tehran');
+        $since = $key === 'today' ? (new DateTimeImmutable('today', $tz))->getTimestamp() : $now - $windows[$key];
+        global $wpdb;
+        $table = self::table();
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT observed_at, source_valid, grid_rank, absolute_ad_slot, details FROM $table
+            WHERE query = %s AND observed_at >= %s AND observed_at <= %s ORDER BY observed_at DESC, id DESC",
+            $query, gmdate('Y-m-d H:i:s', $since), gmdate('Y-m-d H:i:s', $now)
+        ), ARRAY_A);
+        if (!is_array($rows) || !$rows) { return "«$query» در بازهٔ $key اسکن ثبت‌شده ندارد."; }
+        $valid = 0;
+        $measured = 0;
+        $top3 = 0;
+        $best = null;
+        $latest = null;
+        foreach ($rows as $row) {
+            if ((int) $row['source_valid'] !== 1) { continue; }
+            $valid++;
+            $latest ??= $row;
+            $slot = (int) $row['absolute_ad_slot'];
+            $details = json_decode((string) $row['details'], true);
+            if ($slot <= 0 && empty($details['scan_complete'])) { continue; }
+            $measured++;
+            if ($slot > 0) {
+                $best = $best === null ? $slot : min($best, $slot);
+                if ($slot <= 3) { $top3++; }
+            }
+        }
+        $lines = ["جایگاه در جست‌وجوی «$query» | $key", 'نمونه‌های معتبر: ' . $valid . ' از ' . count($rows)];
+        if ((int) $rows[0]['source_valid'] !== 1) { $lines[] = 'جدیدترین تلاش نامعتبر بود.'; }
+        if ($latest) {
+            $time = strtotime($latest['observed_at'] . ' UTC');
+            $grid = (int) $latest['grid_rank'];
+            $slot = (int) $latest['absolute_ad_slot'];
+            $lines[] = 'آخرین اسکن معتبر ' . wp_date('Y/m/d H:i', $time, $tz) . ' تهران';
+            $lines[] = 'جایگاه در کل نتایج: ' . ($grid > 0 ? $grid : 'مشاهده نشد') .
+                ' | جایگاه مطلق آگهی: ' . ($slot > 0 ? $slot : 'مشاهده نشد');
+        }
+        $lines[] = 'بهترین جایگاه مطلق آگهی: ' . ($best ?? 'نامشخص') .
+            ' | حضور در ۳ رتبهٔ اول: ' . ($measured ? "$top3 از $measured اسکن قابل قضاوت" : 'نمونهٔ قابل قضاوت ندارد');
+        return implode("\n", $lines);
     }
 
     private static function single_report(string $query): string {

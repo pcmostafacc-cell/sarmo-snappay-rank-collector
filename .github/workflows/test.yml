@@ -31,6 +31,7 @@ jobs:
       - run: php tests/otp-guard.php
       - run: php tests/source-health.php
       - run: php tests/market-report.php
+      - run: php -l tests/ads-snapshot.php && php tests/ads-snapshot.php
       - run: node --test *.test.mjs codespaces-login/*.test.mjs
       - run: for file in codespaces-login/*.sh; do bash -n "$file" || exit; done
       - run: node --check codespaces-login/server.mjs && node --check codespaces-login/portal.js

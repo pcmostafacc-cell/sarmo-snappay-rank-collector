@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Sarmo SnappPay Monitor
  * Description: Keyword targets, verified rank observations, and Bale reports for Sarmo.
- * Version: 0.9.0
+ * Version: 0.10.0
  * Requires PHP: 8.0
  * Text Domain: sarmo-snappay-monitor
  */
@@ -11,6 +11,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
+require_once __DIR__ . '/sarmo-snappay-ads.php';
 require_once __DIR__ . '/sarmo-snappay-runtime.php';
 require_once __DIR__ . '/sarmo-snappay-auth.php';
 
@@ -27,6 +28,7 @@ final class Sarmo_SnappPay_Monitor {
         add_action('admin_post_sarmo_monitor_remove_keyword', [self::class, 'remove_keyword']);
         add_action('rest_api_init', [self::class, 'routes']);
         Sarmo_SnappPay_Runtime::init();
+        Sarmo_SnappPay_Ads::init();
     }
 
     public static function activate(): void {
@@ -99,7 +101,7 @@ final class Sarmo_SnappPay_Monitor {
             'callback' => static function () {
                 return rest_ensure_response([
                     'api_version' => '0.7.0',
-                    'plugin_version' => '0.9.0',
+                    'plugin_version' => '0.10.0',
                     'persistent_login' => true,
                     'max_keywords' => self::MAX_KEYWORDS,
                     'rank_fields' => ['grid_rank', 'ad_rank', 'absolute_ad_slot', 'merchant_rank'],
@@ -204,6 +206,7 @@ final class Sarmo_SnappPay_Monitor {
             wp_nonce_field('sarmo_monitor_codespace');
             echo '<p><button class="button button-primary">باز کردن مرورگر ورود</button></p></form>';
         }
+        Sarmo_SnappPay_Ads::admin_panel();
         if (isset($_POST['sarmo_probe'])) {
             check_admin_referer('sarmo_monitor_probe');
             $result = wp_safe_remote_get('https://app.snapppay.ir/search/result?referrer=MAIN', [
