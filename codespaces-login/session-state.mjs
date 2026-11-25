@@ -9,3 +9,8 @@ export function scopedSession(state, scope = 'market') {
     }),
   };
 }
+
+export function hasSessionState(session, scope) {
+  return session.cookies.length > 0 || (scope === 'ads' && session.origins.some(entry =>
+    entry.origin === 'https://ads.snapppay.ir' && (entry.localStorage?.length || entry.indexedDB?.length)));
+}

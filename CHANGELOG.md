@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.12.1 — 2026-11-25
+
+- Support Ads sign-in that keeps its authenticated state in browser storage, with separate session verification in a fresh browser context before encryption and handoff.
+- Distinguish invalid links, missing session state, unusable restored sessions and provider errors during manual sign-in.
+
 ## 0.12.0 — 2026-11-25
 
 - Send separate owner-only Bale links for marketplace and Ads sign-in, with a loopback Chrome option for one-time login when Codespaces is unavailable.

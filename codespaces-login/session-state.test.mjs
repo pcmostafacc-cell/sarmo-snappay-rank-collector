@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { scopedSession } from './session-state.mjs';
+import { hasSessionState, scopedSession } from './session-state.mjs';
 
 test('only SnappPay HTTPS origins and exact-domain cookies can be relayed', () => {
   const valid = { domain: '.snapppay.ir' };
@@ -19,4 +19,14 @@ test('Ads and market sessions retain different application hosts', () => {
   const state = { cookies, origins: [] };
   assert.deepEqual(scopedSession(state, 'ads').cookies, [cookies[0]]);
   assert.deepEqual(scopedSession(state, 'market').cookies, [cookies[1]]);
+});
+
+test('Ads supports a storage-only session from its own HTTPS origin', () => {
+  const ads = { origin: 'https://ads.snapppay.ir', localStorage: [{ name: 'fixture', value: 'sample' }] };
+  const market = { ...ads, origin: 'https://app.snapppay.ir' };
+  const state = { cookies: [], origins: [ads, market] };
+  assert.equal(hasSessionState(scopedSession(state, 'ads'), 'ads'), true);
+  assert.equal(hasSessionState(scopedSession(state, 'market'), 'market'), false);
+  assert.equal(hasSessionState({ cookies: [], origins: [market] }, 'ads'), false);
+  assert.equal(hasSessionState({ cookies: [], origins: [{ ...ads, localStorage: [] }] }, 'ads'), false);
 });

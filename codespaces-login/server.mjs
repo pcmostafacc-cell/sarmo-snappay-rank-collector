@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { scopedSession } from './session-state.mjs';
+import { hasSessionState, scopedSession } from './session-state.mjs';
 
 const local = process.argv.includes('--local');
 const origin = local ? 'http://127.0.0.1:6081' : process.env.SARMO_LOGIN_ORIGIN;
@@ -16,12 +16,11 @@ const assets = new Map([
   ['/', ['text/html; charset=utf-8', await readFile(new URL('./portal.html', import.meta.url))]],
   ['/portal.js', ['text/javascript; charset=utf-8', await readFile(new URL('./portal.js', import.meta.url))]],
 ]);
-let state = 'idle';
-let browserCookie = '';
+let current = null;
 
 function isPaired(req) {
-  return browserCookie !== '' && (req.headers.cookie || '').split(';')
-    .some(value => value.trim() === 'sarmo_login=' + browserCookie);
+  return current && (req.headers.cookie || '').split(';')
+    .some(value => value.trim() === 'sarmo_login=' + current.cookie);
 }
 
 function postToWordPress(payload) {
@@ -34,7 +33,8 @@ function postToWordPress(payload) {
   });
 }
 
-async function receiveLogin(grant, scope) {
+async function receiveLogin(grant, attempt) {
+  const { scope } = attempt;
   const ads = scope === 'ads';
   const target = ads ? 'https://ads.snapppay.ir/' : search;
   const host = new URL(target).hostname;
@@ -42,43 +42,76 @@ async function receiveLogin(grant, scope) {
     ? tab.getByRole('heading', { name: 'کمپین‌های ساخته‌شده', exact: true })
     : tab.locator('[data-testid="search-typing-input"]');
   let browser;
+  let step = 'browser-failed';
   try {
     browser = await chromium.launch(local ? { headless: false, channel: 'chrome' } : {
       headless: false, args: ['--kiosk', '--window-size=1280,800'],
       env: { DISPLAY: process.env.DISPLAY, XAUTHORITY: process.env.XAUTHORITY, LANG: 'en_US.UTF-8', HOME: process.env.HOME },
     });
+    if (current !== attempt) return;
+    attempt.browser = browser;
     const ctx = await browser.newContext({ locale: 'fa-IR', viewport: null });
     const page = await ctx.newPage();
+    step = 'provider-unavailable';
     let sawLogin = false;
     page.on('framenavigated', frame => {
       if (frame === page.mainFrame() && new URL(frame.url()).hostname === 'sso.snapppay.ir') sawLogin = true;
     });
-    await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const response = await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    if (response?.status() === 429) {
+      attempt.state = 'provider-limited';
+      return;
+    }
+    if (response?.status() >= 500) {
+      attempt.state = 'provider-unavailable';
+      return;
+    }
+    await page.bringToFront().catch(() => {});
     const deadline = Date.now() + 10 * 60_000;
-    while (Date.now() < deadline && !page.isClosed()) {
+    step = 'failed';
+    while (current === attempt && Date.now() < deadline && !page.isClosed()) {
       if ((ads || sawLogin) && new URL(page.url()).hostname === host && await ready(page).isVisible()) {
-        const probe = await ctx.newPage();
-        try {
-          await probe.goto(target, { waitUntil: 'domcontentloaded', timeout: 15000 });
-          await ready(probe).waitFor({ timeout: 12000 });
-          if (new URL(probe.url()).hostname === host) {
-            const session = scopedSession(await ctx.storageState({ indexedDB: true }), scope);
-            if (session.cookies.length === 0) throw new Error('No session cookies');
-            const response = await postToWordPress({ grant, session });
-            state = response.ok ? 'saved' : 'handoff-failed';
-            return;
+        attempt.state = 'checking-session';
+        step = 'session-read-failed';
+        let verifiedSession = null;
+        let hadSessionState = false;
+        // A tab in the original context can see state the collector cannot reuse.
+        for (let retry = 0; retry < 2 && current === attempt; retry++) {
+          const session = scopedSession(await ctx.storageState({ indexedDB: true }), scope);
+          if (hasSessionState(session, scope)) {
+            hadSessionState = true;
+            const checkContext = await browser.newContext({ locale: 'fa-IR', storageState: session });
+            try {
+              const probe = await checkContext.newPage();
+              const check = await probe.goto(target, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
+              if (check?.status() === 429) { attempt.state = 'provider-limited'; return; }
+              const visible = check?.ok() && await ready(probe).waitFor({ timeout: 12000 }).then(() => true, () => false);
+              if (visible && new URL(probe.url()).hostname === host) {
+                verifiedSession = session;
+                break;
+              }
+            } finally { await checkContext.close().catch(() => {}); }
           }
-        } finally {
-          await probe.close().catch(() => {});
+          if (retry === 0) await sleep(2000);
         }
+        if (current !== attempt) return;
+        if (!verifiedSession) {
+          attempt.state = hadSessionState ? 'session-not-portable' : 'session-missing';
+          return;
+        }
+        step = 'handoff-failed';
+        const handoff = await postToWordPress({ grant, session: verifiedSession });
+        attempt.state = handoff.ok ? 'saved' : 'handoff-failed';
+        return;
       }
       await sleep(2000);
     }
-    state = 'expired';
+    attempt.state = page.isClosed() ? 'window-closed' : 'expired';
   } catch {
-    state = 'failed';
+    attempt.state = step;
   } finally {
     await browser?.close().catch(() => {});
+    attempt.browser = null;
   }
 }
 
@@ -98,16 +131,15 @@ const server = createServer(async (req, res) => {
     return res.writeHead(200, { ...headers, 'Content-Type': type }).end(body);
   }
   if (req.url === '/portal-check') {
-    return reply(state === 'working' && isPaired(req) ? 200 : 403, {});
+    return reply(current?.state === 'working' && isPaired(req) ? 200 : 403, {});
   }
   if (req.method === 'GET' && req.url === '/status') {
-    return reply(200, { state: isPaired(req) ? state : 'idle', viewer: !local });
+    return reply(200, { state: isPaired(req) ? current.state : 'idle', viewer: !local });
   }
   if (req.method !== 'POST' || req.url !== '/pair') return reply(404, { ok: false });
   if (req.headers.origin !== origin || !/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) {
     return reply(403, { ok: false });
   }
-  if (state === 'working') return reply(409, { ok: false });
   try {
     let data = '';
     for await (const chunk of req) {
@@ -116,18 +148,18 @@ const server = createServer(async (req, res) => {
     }
     const { grant } = JSON.parse(data);
     if (typeof grant !== 'string' || !/^[a-f0-9]{64}$/.test(grant)) return reply(400, { ok: false });
-    if (state === 'working') return reply(409, { ok: false });
     const check = await postToWordPress({ grant, check: true });
     if (!check.ok) return reply(403, { ok: false });
     const { scope } = await check.json();
     if (scope !== 'ads' && scope !== 'market') return reply(403, { ok: false });
-    if (state === 'working') return reply(409, { ok: false });
-    browserCookie = randomBytes(32).toString('hex');
-    state = 'working';
+    const previous = current;
+    const attempt = { scope, cookie: randomBytes(32).toString('hex'), state: 'working', browser: null };
+    current = attempt;
     reply(202, { ok: true }, {
-      'Set-Cookie': 'sarmo_login=' + browserCookie + '; Max-Age=720; Path=/; HttpOnly; SameSite=Strict' + (local ? '' : '; Secure'),
+      'Set-Cookie': 'sarmo_login=' + attempt.cookie + '; Max-Age=720; Path=/; HttpOnly; SameSite=Strict' + (local ? '' : '; Secure'),
     });
-    void receiveLogin(grant, scope);
+    void previous?.browser?.close().catch(() => {});
+    void receiveLogin(grant, attempt);
   } catch {
     reply(400, { ok: false });
   }

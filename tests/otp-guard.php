@@ -124,3 +124,24 @@ if ($auth->data['session'] !== $session || $auth->data['manual_browser_login'] !
     throw new RuntimeException('Manual mode must expose the saved session and prevent automatic login.');
 }
 echo "Codespace grant checks passed.\n";
+
+$grant = str_repeat('b', 64);
+$hash = hash('sha256', $grant);
+$key = 'sarmo_monitor_login_grant_' . $hash;
+$GLOBALS['options']['sarmo_monitor_codespace_grant'] = $hash;
+$GLOBALS['options'][$key] = ['expires' => time() + 120, 'scope' => 'ads', 'local' => true];
+$origin = ['origin' => 'https://ads.snapppay.ir', 'localStorage' => [['name' => 'fixture', 'value' => 'sample']]];
+$storageOnly = ['cookies' => [], 'origins' => [$origin]];
+$foreignOrigin = ['cookies' => [], 'origins' => [array_merge($origin, ['origin' => 'https://app.snapppay.ir'])]];
+foreach ([$foreignOrigin, ['cookies' => [], 'origins' => []]] as $invalid) {
+    $result = Sarmo_SnappPay_Auth::receive_codespace_session(new WP_REST_Request(['grant' => $grant, 'session' => $invalid]));
+    if (!$result instanceof WP_Error || $result->code !== 'bad_session') {
+        throw new RuntimeException('An empty or wrong-origin storage-only Ads session must be rejected.');
+    }
+}
+$accepted = Sarmo_SnappPay_Auth::receive_codespace_session(new WP_REST_Request(['grant' => $grant, 'session' => $storageOnly]));
+if (!$accepted instanceof WP_REST_Response || Sarmo_SnappPay_Auth::ads_session()->data['session'] !== $storageOnly ||
+    Sarmo_SnappPay_Auth::get_auth()->data['session'] !== $session) {
+    throw new RuntimeException('WordPress must save a storage-only Ads session independently of the market session.');
+}
+echo "Ads storage-only session checks passed.\n";

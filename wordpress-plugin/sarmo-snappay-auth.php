@@ -239,18 +239,24 @@ final class Sarmo_SnappPay_Auth {
     private static function valid_codespace_session($state, string $scope): bool {
         $site = $scope === 'ads' ? 'ads.snapppay.ir' : 'app.snapppay.ir';
         $hosts = ['snapppay.ir', $site, 'sso.snapppay.ir'];
-        if (!is_array($state) || !is_array($state['cookies'] ?? null) || !$state['cookies'] || !is_array($state['origins'] ?? null)) {
+        if (!is_array($state) || !is_array($state['cookies'] ?? null) || !is_array($state['origins'] ?? null)) {
             return false;
         }
         foreach ($state['cookies'] as $cookie) {
             if (!is_array($cookie) || !is_string($cookie['domain'] ?? null) ||
                 !in_array(ltrim($cookie['domain'], '.'), $hosts, true)) { return false; }
         }
+        $allowed_origins = array_map(static fn($host) => 'https://' . $host, $hosts);
+        $has_ads_storage = false;
         foreach ($state['origins'] as $entry) {
             if (!is_array($entry) || !is_string($entry['origin'] ?? null) ||
-                !in_array($entry['origin'], array_map(static fn($host) => 'https://' . $host, $hosts), true)) { return false; }
+                !in_array($entry['origin'], $allowed_origins, true)) { return false; }
+            if ($scope === 'ads' && $entry['origin'] === 'https://ads.snapppay.ir') {
+                $has_ads_storage = $has_ads_storage || (is_array($entry['localStorage'] ?? null) && $entry['localStorage']) ||
+                    (is_array($entry['indexedDB'] ?? null) && $entry['indexedDB']);
+            }
         }
-        return true;
+        return $state['cookies'] !== [] || $has_ads_storage;
     }
 
     private static function waiting_option(string $scope): string {
